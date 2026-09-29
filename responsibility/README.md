@@ -83,6 +83,30 @@ To evaluate a trajectory produced in simulation instead of the log (e.g. the
 ego of a CAT-trained policy), replace the agent's track before computing:
 `Scene.with_track(agent, positions, headings, velocities)` over the 91 steps.
 
+## Visualisation
+
+```bash
+python -m scripts.responsibility.visualize_responsibility --scene 17 \
+    --run logs/responsibility/sdc --levels logs/responsibility/levels/levels.csv \
+    --out-dir logs/responsibility/video_17
+```
+
+One frame per context step t_k (`frames/t_XXX.png`), stitched into
+`responsibility.gif` (and `.mp4` with OpenCV installed). Each frame shows:
+
+- **scene:** the map, every agent at t_k with 1 s of history, the agent's
+  motion set (DenseTNT goal samples; the first 2 s solid, coloured by goal
+  probability), its logged future, and the neighbours it was compared with,
+  with their logged futures. The neighbour behind β_s is outlined red, the one
+  behind β_c blue. `--ego-heatmap` adds the agent's own goal distribution.
+- **courtesy:** that neighbour's goal distribution with the agent in the scene
+  and without it, i.e. the two sides of the KL.
+- **timeline:** β_s and β_c over the clip with the current step marked; with
+  `--levels`, every window's level as background, aggressive levels hatched.
+
+It runs the same code as `compute_responsibility`, and `--run` takes that
+run's settings, so the numbers equal the run's `windows.csv`.
+
 ## Responsibility levels
 
 Thresholds say "more than X"; levels say what kinds of behaviour logged
@@ -136,6 +160,15 @@ source ~/venvs/cat39/bin/activate
 python -m pytest tests/responsibility -q
 python -m scripts.responsibility.verify_densetnt --n 3 --device cuda   # must end with ALL CHECKS PASSED
 bash scripts/responsibility/run_h200.sh           # step 2: sdc + adv over 500 scenes, summaries, levels
+```
+
+To run on a newer Python instead, rebuild advgen's Cython extension for it
+(needs a C compiler; it overwrites `advgen/utils_cython*.so` for that Python
+only) and re-run `verify_densetnt`. A rebuild from `utils_cython.pyx` with
+Cython 0.29 passes every check:
+
+```bash
+pip install "cython>=0.29.34,<3" && python scripts/responsibility/build_cython.py
 ```
 
 `run_h200.sh` starts `SHARDS` (16) processes per agent, spread over the

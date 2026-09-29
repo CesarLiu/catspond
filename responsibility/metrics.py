@@ -112,14 +112,20 @@ def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor) -> float:
 
 
 def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: ResponsibilityConfig,
-                      generator: Optional[torch.Generator] = None) -> Optional[Observation]:
+                      generator: Optional[torch.Generator] = None,
+                      record: Optional[Dict] = None) -> Optional[Observation]:
     """Safety and courtesy responsibility of ``agent`` at context step
     ``step``, or None when DenseTNT has no prediction for it there.
 
     ``model`` provides ``distribution(scene, step, agent)``,
     ``sample(dist, n, generator) -> (goal idx, log prob, trajectories [n, 80, 2])``
     and ``with_and_without(scene, step, b, a) -> (dist, dist) | None``
-    (responsibility.densetnt.DenseTNT)."""
+    (responsibility.densetnt.DenseTNT).
+
+    ``record``, if given, receives what the values were computed from (for
+    visualisation): "distribution" (the agent's goal distribution),
+    "samples" [N, 80, 2], "horizon", "neighbours" {index: evidence} and
+    "courtesy" {neighbour index: (distribution with, without the agent)}."""
     horizon = effective_horizon(scene, step, cfg)
     if horizon == 0:
         return None
@@ -130,8 +136,12 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     fut = slice(step + 1, step + 1 + horizon)
     speed = float(np.linalg.norm(scene.velocity[agent, step]))
     per_neighbour: Dict[str, Dict[str, float]] = {}
+    if record is not None:
+        record.update(distribution=dist, samples=None, horizon=horizon, neighbours=neighbours, courtesy={})
     if neighbours:
         _, _, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
+        if record is not None:
+            record["samples"] = trajs
         samples = trajs[:, :horizon, :2]
         actual, actual_valid = scene.position[agent, fut, :2], scene.valid[agent, fut]
         for b, evidence in neighbours.items():
@@ -143,6 +153,8 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
                 pair = model.with_and_without(scene, step, b, agent)
                 if pair is not None:
                     entry["courtesy"] = goal_kl(pair[0].log_prob, pair[1].log_prob)
+                    if record is not None:
+                        record["courtesy"][b] = pair
             per_neighbour[scene.track_ids[b]] = entry
     safety = max((v["safety"] for v in per_neighbour.values()), default=0.0)
     courtesy = max((v["courtesy"] for v in per_neighbour.values() if v["courtesy"] is not None), default=0.0)
