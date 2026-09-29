@@ -114,6 +114,47 @@ PY
 
 每个场景输出 `frames/*.png`、`responsibility.gif` 和 `responsibility.mp4`。对手车的视频把路径换成 `adv/records/`、输出目录前缀换成 `adv_`。
 
+## 4b. CVaR α 对照（论文的两种读法，必跑）
+
+对 safety responsibility 的 CVaR，Hsu 论文的正文和公式给出相反的尾部方向：
+- 正文说 "α → 1 时为最大值"。本实现按这个约定，默认 α = 0.1，等于取安全余量减少量上尾 90% 的均值，接近平均值。
+- 复现指南（按公式）把 α = 0.1 读作 "40 个样本中最大 4 个的均值"（上尾 10%）。在本实现里这对应 `--cvar-alpha 0.9`。
+
+两者的数值会明显不同，所以要用同样的设置再跑一遍后一种：
+
+```bash
+OUT=logs/alpha09 EXTRA="--cvar-alpha 0.9" RECORDS=1 SHARDS=32 bash scripts/responsibility/run_h200.sh 2>&1 | tee logs/run_alpha09.log
+```
+
+两组的 β_s 分布并排比较（courtesy 不受 α 影响，两组应该一致）：
+
+```bash
+python - <<'PY'
+import numpy as np
+from responsibility.results import read_windows
+for agent in ("sdc", "adv"):
+    for run in ("logs/responsibility", "logs/alpha09"):
+        rows = [r for r in read_windows(f"{run}/{agent}") if r["speed"] >= 1.0]
+        s = np.array([r["safety"] for r in rows]); c = np.array([r["courtesy"] for r in rows])
+        q = np.quantile(s, [0.5, 0.75, 0.9, 0.99])
+        print(f"{agent:>3} {run:>20}: {len(rows)} windows  safety p50/p75/p90/p99 "
+              + " ".join(f"{v:+.2f}" for v in q) + f"  share > 0: {100 * (s > 0).mean():.0f}%"
+              + f"  | courtesy p90 {np.quantile(c, 0.9):.3f}")
+PY
+```
+
+然后分别对照论文 Fig. 2/3：大部分质量在 0 附近，safety 轴最多到约 1.2 m。
+- 看哪种读法的分布更像论文；
+- 看判定结果变化多大：比较两组 `summary/scenes.csv` 里被标为激进的场景，以及 `levels/` 的等级表。
+
+```bash
+# scenes.csv 是 \r\n 换行，先去掉 \r
+flagged() { tail -n +2 "$1" | tr -d '\r' | awk -F, '$NF==1{print $1}' | sort; }
+diff <(flagged logs/responsibility/sdc/summary/scenes.csv) <(flagged logs/alpha09/sdc/summary/scenes.csv)
+```
+
+之后选定一种读法，在报告里写明。第 6 步对抗选择的 β 固定用 α = 0.1（`ResponsibleAdvGenerator` 的默认值）；选定 0.9 的话，第 6 步的阈值要在同样的读法下重新标定，目前需要改 `responsibility/adversarial.py` 里的 `ResponsibilityConfig`。
+
 ## 5. （可选）敏感性分析
 
 每组设置单独一个输出目录；`--horizon`、`--d-sat` 等参数通过 `EXTRA` 传入：
@@ -226,6 +267,7 @@ done
 | 环境与一致性验证 | 1 | `ALL CHECKS PASSED` |
 | SDC / 对手车责任（500 场景） | 3 | `summary/`、`levels/`、records |
 | 激进场景视频 | 4 | `logs/videos/*/responsibility.mp4` |
+| CVaR α 对照（两种读法） | 4b | `logs/alpha09`，与主实验并排的分位数 |
 | 敏感性（可选） | 5 | `logs/sens_*` |
 | 对抗选择离线对比与 τ 标定 | 6 | `--summarize` 表格、TAU |
 | 闭环攻击成功率 ⚠ | 8a | `logs/advgen/closed_*.log` |
