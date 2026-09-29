@@ -10,7 +10,12 @@ before the end of the log) it writes one row to OUT/windows.csv:
              intended goal (KL, nats)
   safety_against / courtesy_toward   the neighbour each maximum came from
 
-plus the full per-neighbour observations to OUT/obs/<scene>.pkl. Re-running
+plus the full per-neighbour observations to OUT/obs/<scene>.pkl. With
+--save-records it also writes OUT/records/<scene>.pkl: the scene, the agent's
+motion set and goal distribution and every neighbour's goal distributions with
+and without it at every step, and the values -- enough to inspect and
+visualise the run offline (visualize_responsibility.py --record) without
+DenseTNT; values are identical with or without records. Re-running
 skips finished scenes; OUT/config.json pins the settings. With
 --num-shards N --shard-index i, N processes split the scenes round-robin into
 the same OUT, each writing windows.shard-<i>-of-<N>.csv (run_h200.sh does this).
@@ -38,6 +43,7 @@ import torch  # noqa: E402
 from responsibility.densetnt import DenseTNT  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
+from responsibility.records import run_scene, save_record  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
@@ -60,6 +66,10 @@ def parse_args():
     p.add_argument("--horizon", type=int, default=d.metric_horizon, help="10 Hz steps scored.")
     p.add_argument("--stride", type=int, default=d.window_stride, help="Steps between context steps.")
     p.add_argument("--no-courtesy", action="store_true")
+    p.add_argument("--save-records", action="store_true",
+                   help="Also write OUT/records/<scene>.pkl for offline inspection and visualisation.")
+    p.add_argument("--top-mass", type=float, default=0.99,
+                   help="Goal distributions in records keep the most probable goals covering this mass.")
     i = InteractionConfig()
     p.add_argument("--max-neighbors", type=int, default=i.max_neighbors)
     p.add_argument("--gap-threshold", type=float, default=i.gap_threshold)
@@ -106,7 +116,10 @@ def main():
     if args.n is not None:
         files = files[: args.n]
     files = files[args.shard_index :: args.num_shards]
-    todo = [f for f in files if not (out / "obs" / f"{f.stem}.pkl").exists()]
+    # with --save-records, scenes finished without a record are redone too
+    # (their repeated CSV rows are dropped when read: responsibility/results.py)
+    todo = [f for f in files if not (out / "obs" / f"{f.stem}.pkl").exists()
+            or (args.save_records and not (out / "records" / f"{f.stem}.pkl").exists())]
     print(f"{len(files)} scenes, {len(files) - len(todo)} done, {len(todo)} to go", flush=True)
     if not todo:
         return
@@ -128,7 +141,12 @@ def main():
                 print(f"{path.name}: skipped ({e})", flush=True)
                 observations = []
             else:
-                observations = scene_responsibility(model, scene, agent, cfg)
+                if args.save_records:
+                    observations, record = run_scene(model, scene, agent, cfg, args.top_mass)
+                    record["scene_file"] = path.stem
+                    save_record(record, out / "records" / f"{path.stem}.pkl")
+                else:
+                    observations = scene_responsibility(model, scene, agent, cfg)
             for obs in observations:
                 writer.writerow({"scene": path.stem, **obs.as_row()})
             handle.flush()

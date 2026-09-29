@@ -108,6 +108,37 @@ One frame per context step t_k (`frames/t_XXX.png`), stitched into
 It runs the same code as `compute_responsibility`, and `--run` takes that
 run's settings, so the numbers equal the run's `windows.csv`.
 
+### Records: inspect and visualise a run offline
+
+`compute_responsibility --save-records` also writes
+`OUT/records/<scene>.pkl` (0.5–1.5 MB per scene), and a live visualisation
+saves its `record.pkl`. A record holds the scene itself, plus, for every
+context step t_k:
+
+- the agent's motion set (samples [N, 80, 2] and their goal log-probabilities);
+- its goal distribution;
+- each vehicle neighbour's goal distributions with and without the agent;
+- all values, per neighbour included.
+
+Goal distributions keep the most probable goals covering `--top-mass` (0.99)
+of the probability, in scene coordinates. Values are identical with or
+without records. Records render without DenseTNT, TensorFlow or the scene
+files:
+
+```bash
+python -m scripts.responsibility.visualize_responsibility \
+    --record logs/responsibility/sdc/records/17.pkl --levels logs/responsibility/levels/levels.csv \
+    --out-dir logs/responsibility/video_17
+```
+
+In Python: `responsibility.records.load_record(path)` returns a dict with
+`scene` (`scene_of(record)` rebuilds the `Scene`), `agent`, `agent_id`,
+`config` and `frames`. Each frame has `step`, `observation`, `samples`,
+`sample_log_prob`, `goals` and `courtesy` {neighbour id: {with, without,
+kl}}. In windows without neighbours the metric draws no samples, so the
+record keeps a display-only motion set (`metric_samples` False), drawn off
+the metric's random stream.
+
 ## Responsibility levels
 
 Thresholds say "more than X"; levels say what kinds of behaviour logged

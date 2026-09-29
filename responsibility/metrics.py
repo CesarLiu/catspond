@@ -124,8 +124,9 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
 
     ``record``, if given, receives what the values were computed from (for
     visualisation): "distribution" (the agent's goal distribution),
-    "samples" [N, 80, 2], "horizon", "neighbours" {index: evidence} and
-    "courtesy" {neighbour index: (distribution with, without the agent)}."""
+    "samples" [N, 80, 2] and "sample_log_prob" [N] (None without neighbours),
+    "horizon", "neighbours" {index: evidence} and "courtesy" {neighbour
+    index: (distribution with, without the agent)}."""
     horizon = effective_horizon(scene, step, cfg)
     if horizon == 0:
         return None
@@ -137,11 +138,12 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     speed = float(np.linalg.norm(scene.velocity[agent, step]))
     per_neighbour: Dict[str, Dict[str, float]] = {}
     if record is not None:
-        record.update(distribution=dist, samples=None, horizon=horizon, neighbours=neighbours, courtesy={})
+        record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
+                      neighbours=neighbours, courtesy={})
     if neighbours:
-        _, _, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
+        _, sample_log_prob, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
         if record is not None:
-            record["samples"] = trajs
+            record["samples"], record["sample_log_prob"] = trajs, sample_log_prob
         samples = trajs[:, :horizon, :2]
         actual, actual_valid = scene.position[agent, fut, :2], scene.valid[agent, fut]
         for b, evidence in neighbours.items():

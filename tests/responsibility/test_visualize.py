@@ -3,54 +3,98 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from responsibility.metrics import ResponsibilityConfig, responsibility_at
+from responsibility.metrics import ResponsibilityConfig, responsibility_at, scene_responsibility
+from responsibility.records import load_record, run_scene, save_record, scene_of, sparse_goals
 from scripts.responsibility import visualize_responsibility as vis
-from tests.responsibility.conftest import FakeModel, make_scene, track
+from tests.responsibility.conftest import make_scene, track
 
 
-def _dist(origin, n_goals=50, seed=0):
-    rng = np.random.default_rng(seed)
-    goals = rng.normal(scale=15.0, size=(n_goals, 2))
-    return SimpleNamespace(
-        goals=goals,
-        log_prob=torch.log_softmax(torch.tensor(rng.normal(size=n_goals), dtype=torch.float), -1),
-        to_global=lambda pts: np.asarray(pts) + origin,
-        goals_global=goals + origin,
-    )
+class GoalModel:
+    """Stand-in model with goal distributions: 50 goals around each agent,
+    samples are straight lines to sampled goals; courtesy for vehicle 1."""
+
+    def __init__(self):
+        self.rng = np.random.default_rng(0)
+
+    def _dist(self, scene, step, agent, shift=0.0):
+        origin = scene.position[agent, step, :2]
+        goals = np.stack([np.linspace(5, 40, 50), np.linspace(-5, 5, 50) + shift], -1)
+        logits = torch.linspace(-1, 1, 50) * (1 + shift)
+        return SimpleNamespace(goals=goals, log_prob=torch.log_softmax(logits, -1),
+                               to_global=lambda pts, o=origin: np.asarray(pts) + o)
+
+    def distribution(self, scene, step, agent, excluded=(), avoid_partner=()):
+        return self._dist(scene, step, agent)
+
+    def sample(self, dist, n, generator=None):
+        idx = torch.multinomial(dist.log_prob.exp(), n, replacement=True, generator=generator)
+        ends = dist.to_global(dist.goals[idx.numpy()])
+        start = dist.to_global(np.zeros((1, 2)))[0]
+        frac = np.linspace(1 / 80, 1, 80)[None, :, None]
+        return idx, dist.log_prob[idx], start + (ends[:, None] - start) * frac
+
+    def with_and_without(self, scene, step, b, a):
+        if scene.types[b] != "VEHICLE":
+            return None
+        return self._dist(scene, step, b), self._dist(scene, step, b, shift=0.5)
 
 
 def _scene():
     return make_scene({
         "0": track((0, 0), (10, 0)),
         "1": track((5, 3.5), (10, 0)),
-        "2": track((0, 30), (5, 0)),
+        "2": track((-30, 40), (0, 0)),  # parked far away: no neighbour in some windows
     })
 
 
 def test_record_captures_what_the_values_were_computed_from():
-    scene = _scene()
-    samples = lambda n: np.tile(np.stack([np.arange(80) + 1.0, np.zeros(80)], -1), (n, 1, 1))  # noqa: E731
-    model = FakeModel(samples, courtesy_logits={1: ([0.0, 0.0], [1.0, 0.0])})
     record = {}
-    obs = responsibility_at(model, scene, 0, 10, ResponsibilityConfig(n_safety_samples=3), record=record)
-    assert record["samples"].shape == (3, 80, 2) and record["horizon"] == 20
+    obs = responsibility_at(GoalModel(), _scene(), 0, 10, ResponsibilityConfig(n_safety_samples=3), record=record)
+    assert record["samples"].shape == (3, 80, 2) and record["sample_log_prob"].shape == (3,)
     assert set(record["neighbours"]) == {1} and set(record["courtesy"]) == {1}
     assert obs.courtesy > 0
 
 
-def test_a_frame_renders_with_and_without_levels():
+def test_records_keep_the_run_values_and_survive_a_round_trip(tmp_path):
     scene = _scene()
-    origin = scene.position[0, 10, :2]
-    obs = SimpleNamespace(safety=0.4, courtesy=0.2, speed=10.0, per_neighbour={
-        "1": {"safety": 0.4, "courtesy": 0.2, "min_gap": 1.0, "pet": 0.5, "ttc": 3.0, "type": "VEHICLE"}})
-    samples = np.tile(np.stack([np.arange(80) + 1.0, np.zeros(80)], -1), (6, 1, 1)) + origin
-    record = {"distribution": _dist(origin), "samples": samples, "horizon": 20,
-              "neighbours": {1: {}}, "courtesy": {1: (_dist(scene.position[1, 10, :2]),
-                                                     _dist(scene.position[1, 10, :2], seed=1))}}
-    frames = [{"step": 10, "obs": obs, "record": record, "samples": samples},
-              {"step": 20, "obs": obs, "record": record, "samples": samples}]
-    groups = vis.map_segments(scene)
-    for levels in ({}, {10: (0, 0), 20: (2, 1)}):
-        image = vis.render(scene, 0, frames[0], 0, frames, groups, 40.0, 20, levels, ego_heatmap=True)
-        assert image.ndim == 3 and image.shape[2] == 3 and image.std() > 0
-    assert vis.fit_radius(scene, 0, frames, 20) >= 30.0
+    cfg = ResponsibilityConfig(n_safety_samples=6, window_stride=20)
+    plain = scene_responsibility(GoalModel(), scene, 0, cfg)
+    observations, record = run_scene(GoalModel(), scene, 0, cfg)
+    assert [(o.step, o.safety, o.courtesy) for o in observations] == [(o.step, o.safety, o.courtesy) for o in plain]
+    save_record(record, tmp_path / "r.pkl")
+    loaded = load_record(tmp_path / "r.pkl")
+    assert scene_of(loaded).track_ids == scene.track_ids and loaded["agent_id"] == "0"
+    frame = loaded["frames"][0]
+    assert frame["samples"].dtype == np.float32 and frame["samples"].shape == (6, 80, 2)
+    assert set(frame["courtesy"]) == {"1"} and frame["courtesy"]["1"]["kl"] == frame["observation"]["courtesy"]
+    assert abs(frame["goals"]["prob"].sum() - frame["goals"]["mass"]) < 1e-5
+
+
+def test_sparse_goals_keep_the_requested_mass():
+    dist = GoalModel()._dist(_scene(), 10, 0)
+    kept = sparse_goals(dist, top_mass=0.5)
+    assert kept["mass"] >= 0.5 and len(kept["prob"]) < 50
+    assert np.all(np.diff(kept["prob"]) <= 0)
+
+
+def test_windows_without_neighbours_get_display_samples_off_the_metric_stream():
+    scene = make_scene({"0": track((0, 0), (10, 0)), "1": track((-30, 40), (0, 0))})
+    cfg = ResponsibilityConfig(n_safety_samples=4, window_stride=30)
+    observations, record = run_scene(GoalModel(), scene, 0, cfg)
+    frame = record["frames"][0]
+    assert not frame["metric_samples"] and frame["samples"].shape[0] > 0
+    assert observations[0].per_neighbour == {}
+
+
+def test_offline_rendering_from_a_record(tmp_path):
+    cfg = ResponsibilityConfig(n_safety_samples=6, window_stride=30)
+    _, record = run_scene(GoalModel(), _scene(), 0, cfg)
+    record["scene_file"] = "7"
+    save_record(record, tmp_path / "7.pkl")
+    levels = tmp_path / "levels.csv"
+    levels.write_text("run,scene,agent_id,step,level,aggressive\n" + "".join(
+        f"sdc,7,0,{f['step']},{i % 2},{i % 2}\n" for i, f in enumerate(record["frames"])))
+    (gif, mp4), radius = vis.render_record(load_record(tmp_path / "7.pkl"), tmp_path / "video", levels,
+                                           ego_heatmap=True)
+    assert gif.exists() and radius >= 30.0
+    assert len(list((tmp_path / "video" / "frames").glob("t_*.png"))) == len(record["frames"])
