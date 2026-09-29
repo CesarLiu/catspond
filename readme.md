@@ -69,6 +69,17 @@ python cat_advgen.py
 
 The safety-critical scenario generation pipeline is universal with respect to arbitrary ego controllers. In this example, we generate adversarial traffic against EgoReplay policy. You can replace it with your own policies.
 
+## Measure how aggressively a vehicle drives (counterfactual responsibility)
+
+`responsibility/` computes the safety and courtesy responsibility of Hsu et al. (IROS 2023) for the
+self-driving car (or any vehicle) in every window of a scene, using the same DenseTNT traffic prior,
+and flags aggressive driving. See [responsibility/README.md](responsibility/README.md).
+
+```bash
+python -m scripts.responsibility.compute_responsibility --out-dir logs/responsibility/sdc --n 50
+python -m scripts.responsibility.summarize_responsibility --run logs/responsibility/sdc
+```
+
 ## Train a TD3-based policy with CAT  
 
 Run the following script to conduct CAT training.
