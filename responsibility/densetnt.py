@@ -256,12 +256,6 @@ class DenseTNT:
         return self.complete(dist, m["pred_goals"]), np.asarray(m["pred_probs"])
 
 
-def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor) -> torch.Tensor:
-    """KL(p || q) of two goal distributions over the same candidates (nats)."""
-    p = log_p.exp()
-    return (p * (log_p - log_q)).sum()
-
-
 def cat_instance(model: DenseTNT, scene: Scene, select: int) -> Optional[dict]:
     """The instance AdvGenerator builds for agent ``select`` (0 = the
     self-driving car, 1 = the adversary) of CAT's pair, for comparisons."""

@@ -33,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-from responsibility.densetnt import DenseTNT, cat_instance, goal_kl  # noqa: E402  (sets up the pickle5 shim)
+from responsibility.densetnt import DenseTNT, cat_instance  # noqa: E402  (sets up the pickle5 shim)
+from responsibility.metrics import goal_kl  # noqa: E402
 from responsibility.scene import Scene, cat_agent_order, scene_files, womd_features  # noqa: E402
 
 
@@ -131,18 +132,18 @@ def check_counterfactuals(model, scene, report, step=10):
 
     first = model.distribution(scene, step, b, avoid_partner=(ego,))
     again = model.distribution(scene, step, b, avoid_partner=(ego,))
-    report.check("repeat", float(goal_kl(first.log_prob, again.log_prob)) == 0.0,
-                 f"KL of a repeated pass {float(goal_kl(first.log_prob, again.log_prob)):.1e}")
+    report.check("repeat", (goal_kl(first.log_prob, again.log_prob)) == 0.0,
+                 f"KL of a repeated pass {(goal_kl(first.log_prob, again.log_prob)):.1e}")
 
     with_ego = model.instance(scene, step, b, avoid_partner=(ego,))
     without_ego = model.instance(scene, step, b, excluded=(ego,))
     dropped = with_ego["map_start_polyline_idx"] - without_ego["map_start_polyline_idx"]
     near = model.with_and_without(scene, step, b, ego)
-    kl_near = float(goal_kl(near[0].log_prob, near[1].log_prob))
+    kl_near = (goal_kl(near[0].log_prob, near[1].log_prob))
     others_of_b, d_b = _vehicles_by_distance(scene, step, b)
     far = others_of_b[-1]
     far_pair = model.with_and_without(scene, step, b, far)
-    kl_far = float(goal_kl(far_pair[0].log_prob, far_pair[1].log_prob))
+    kl_far = (goal_kl(far_pair[0].log_prob, far_pair[1].log_prob))
     report.check("removal", dropped == 1 and kl_near > kl_far,
                  f"removing the ego drops {dropped} agent polyline(s); KL for vehicle {b} "
                  f"({dist_to_ego[0]:.1f} m from the ego): without the ego {kl_near:.4f}, "
@@ -152,7 +153,7 @@ def check_counterfactuals(model, scene, report, step=10):
     partner = model._partner(scene, step, b, avoid=(ego,))
     p1 = model.distribution(scene, step, b, avoid_partner=(ego,))
     p2 = model.distribution(scene, step, b, avoid_partner=(ego, partner))
-    kl_partner = float(goal_kl(p1.log_prob, p2.log_prob))
+    kl_partner = (goal_kl(p1.log_prob, p2.log_prob))
     report.check("partner", kl_partner < 0.1 * max(kl_near, 1e-3),
                  f"KL between two partner choices {kl_partner:.2e} nats (vs {kl_near:.4f} for removing the ego)")
 

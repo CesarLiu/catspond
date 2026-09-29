@@ -1,0 +1,5 @@
+# counterfactual-responsibility outputs and caches
+logs/
+responsibility/__pycache__/
+scripts/responsibility/__pycache__/
+tests/**/__pycache__/
