@@ -33,16 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np  # noqa: E402
 
-
-def read_windows(run_dir):
-    with open(Path(run_dir) / "windows.csv") as f:
-        rows = list(csv.DictReader(f))
-    for r in rows:
-        for key in ("step", "n_neighbours"):
-            r[key] = int(r[key])
-        for key in ("time", "speed", "safety", "courtesy"):
-            r[key] = float(r[key])
-    return rows
+from responsibility.results import read_windows  # noqa: E402
 
 
 def calibrate(values, quantile, floor):

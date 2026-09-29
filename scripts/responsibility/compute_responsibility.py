@@ -11,7 +11,9 @@ before the end of the log) it writes one row to OUT/windows.csv:
   safety_against / courtesy_toward   the neighbour each maximum came from
 
 plus the full per-neighbour observations to OUT/obs/<scene>.pkl. Re-running
-skips finished scenes; OUT/config.json pins the settings.
+skips finished scenes; OUT/config.json pins the settings. With
+--num-shards N --shard-index i, N processes split the scenes round-robin into
+the same OUT, each writing windows.shard-<i>-of-<N>.csv (run_h200.sh does this).
 
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
@@ -48,6 +50,8 @@ def parse_args():
     p.add_argument("--out-dir", required=True)
     p.add_argument("--first", type=int, default=0, help="Index of the first scene file.")
     p.add_argument("--n", type=int, default=None, help="Number of scenes (default: all).")
+    p.add_argument("--num-shards", type=int, default=1)
+    p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--agent", default="sdc", help="sdc, adv (the other object of interest) or a track id.")
     d = ResponsibilityConfig()
     p.add_argument("--n-samples", type=int, default=d.n_safety_samples)
@@ -93,19 +97,23 @@ def main():
     if config_path.exists():
         if json.loads(config_path.read_text()) != json.loads(json.dumps(settings)):
             raise SystemExit(f"{out} holds results computed with other settings; use a new --out-dir")
-    else:
-        config_path.write_text(json.dumps(settings, indent=2))
+    else:  # shards may race here; they write the same content
+        tmp = config_path.with_name(f"config.json.tmp{os.getpid()}")
+        tmp.write_text(json.dumps(settings, indent=2))
+        os.replace(tmp, config_path)
 
     files = scene_files(args.scenes)[args.first:]
     if args.n is not None:
         files = files[: args.n]
+    files = files[args.shard_index :: args.num_shards]
     todo = [f for f in files if not (out / "obs" / f"{f.stem}.pkl").exists()]
     print(f"{len(files)} scenes, {len(files) - len(todo)} done, {len(todo)} to go", flush=True)
     if not todo:
         return
 
     model = DenseTNT(device=args.device)
-    rows_path = out / "windows.csv"
+    rows_path = out / ("windows.csv" if args.num_shards == 1
+                       else f"windows.shard-{args.shard_index}-of-{args.num_shards}.csv")
     new_file = not rows_path.exists()
     with open(rows_path, "a", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=ROW_FIELDS)
