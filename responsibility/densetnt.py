@@ -61,6 +61,16 @@ def cat_args(mode_num: int = 32, output_dir: Optional[str] = None):
     return args
 
 
+def _last_valid_xy(scene: Scene, agents: Sequence[int], step: int) -> np.ndarray:
+    """Each agent's position at its last observed step up to ``step``."""
+    agents = list(agents)
+    if not agents:
+        return np.zeros((0, 2))
+    valid = scene.valid[agents, : step + 1]
+    last = np.where(valid.any(-1), step - np.argmax(valid[:, ::-1], axis=-1), 0)
+    return scene.position[agents, last, :2]
+
+
 @dataclass
 class GoalDistribution:
     """One agent's predicted goal distribution in one scene context."""
@@ -103,12 +113,14 @@ class DenseTNT:
     # instances
     # ------------------------------------------------------------------
 
-    def _partner(self, scene: Scene, step: int, target: int, excluded: Sequence[int]) -> Optional[int]:
-        """DenseTNT's pair model predicts two objects of interest; the second
-        only fixes the agent order. The nearest other vehicle present at
-        ``step`` is used (any agent if there is none)."""
+    def _partner(self, scene: Scene, step: int, target: int, avoid: Sequence[int]) -> Optional[int]:
+        """DenseTNT's pair model takes two objects of interest; the second
+        only fills the second slot of the agent list. The nearest other
+        vehicle present at ``step`` is used (any agent if there is none),
+        never one of ``avoid``: a counterfactual that removes an agent must
+        not also change the partner, or the comparison would measure that too."""
         present = [i for i in range(scene.n_agents)
-                   if i != target and i not in excluded and scene.valid[i, step]]
+                   if i != target and i not in avoid and scene.valid[i, step]]
         if not present:
             return None
         vehicles = [i for i in present if scene.types[i] == "VEHICLE"] or present
@@ -116,10 +128,13 @@ class DenseTNT:
         return vehicles[int(np.argmin(d))]
 
     def instance(self, scene: Scene, step: int, target: int, excluded: Sequence[int] = (),
-                 order: Optional[Sequence[int]] = None, select: int = 0) -> Optional[dict]:
+                 order: Optional[Sequence[int]] = None, select: int = 0,
+                 avoid_partner: Sequence[int] = ()) -> Optional[dict]:
         """advgen's input mapping for predicting ``target`` at ``step`` with
         ``excluded`` agents removed from the scene; None where DenseTNT has no
         prediction (target not a vehicle, or not observed at ``step``).
+        Pass the same ``avoid_partner`` to both sides of a with/without
+        comparison (the agent being removed) so they share the partner.
         ``order`` / ``select`` override the agent order and which of the first
         two agents is predicted (for reproducing CAT's own instances)."""
         if target in excluded:
@@ -127,11 +142,17 @@ class DenseTNT:
         if not scene.valid[target, step] or scene.types[target] != "VEHICLE":
             return None
         if order is None:
-            partner = self._partner(scene, step, target, excluded)
+            partner = self._partner(scene, step, target, tuple(excluded) + tuple(avoid_partner))
             if partner is None:
                 return None
+            # nearest first: the input holds 128 agents, so any beyond that
+            # must be the far ones (scene order would drop arbitrary agents,
+            # possibly the one whose influence is being measured)
             rest = [i for i in range(scene.n_agents) if i not in (target, partner) and i not in excluded]
-            order = [target, partner] + rest
+            anchor = scene.position[target, step, :2]
+            last_seen = np.where(scene.valid[rest][:, : step + 1].any(-1),
+                                 np.linalg.norm(_last_valid_xy(scene, rest, step) - anchor, axis=-1), np.inf)
+            order = [target, partner] + [rest[j] for j in np.argsort(last_seen, kind="stable")]
         features = {k: tf.convert_to_tensor(v) for k, v in womd_features(scene, step, order).items()}
         inputs, decoded = advgen.adv_utils._parse(features)
         mapping = advgen.adv_utils.get_instance(self.args, inputs, decoded, "tmp", select=select)
@@ -186,9 +207,22 @@ class DenseTNT:
             ))
         return out
 
-    def distribution(self, scene: Scene, step: int, target: int, excluded: Sequence[int] = ()) -> Optional[GoalDistribution]:
-        mapping = self.instance(scene, step, target, excluded)
+    def distribution(self, scene: Scene, step: int, target: int, excluded: Sequence[int] = (),
+                     avoid_partner: Sequence[int] = ()) -> Optional[GoalDistribution]:
+        mapping = self.instance(scene, step, target, excluded, avoid_partner=avoid_partner)
         return None if mapping is None else self.goal_distributions([mapping])[0]
+
+    def with_and_without(self, scene: Scene, step: int, target: int, removed: int):
+        """``target``'s goal distribution with and without ``removed`` in the
+        scene (same partner, same candidate goals), or None if DenseTNT does
+        not predict ``target`` at ``step``."""
+        with_a = self.distribution(scene, step, target, avoid_partner=(removed,))
+        if with_a is None:
+            return None
+        without_a = self.distribution(scene, step, target, excluded=(removed,))
+        if without_a is None or not np.array_equal(with_a.goals, without_a.goals):
+            raise RuntimeError("removing an agent changed the predicted agent's candidate goals")
+        return with_a, without_a
 
     @torch.no_grad()
     def complete(self, dist: GoalDistribution, goals_local: np.ndarray) -> np.ndarray:
@@ -220,6 +254,12 @@ class DenseTNT:
         advgen.utils.select_goals_by_NMS(m, dist.goals, scores, self.args.nms_threshold, m["speed"],
                                          mode_num=mode_num or self.args.mode_num)
         return self.complete(dist, m["pred_goals"]), np.asarray(m["pred_probs"])
+
+
+def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor) -> torch.Tensor:
+    """KL(p || q) of two goal distributions over the same candidates (nats)."""
+    p = log_p.exp()
+    return (p * (log_p - log_q)).sum()
 
 
 def cat_instance(model: DenseTNT, scene: Scene, select: int) -> Optional[dict]:

@@ -9,6 +9,13 @@
              deviation is printed for information)
   sampling   goals drawn from the distribution hit each region of the goal grid
              as often as its probability says
+  repeat     the same context twice gives the same distribution (KL 0)
+  removal    leaving an agent out removes exactly its polyline from the input
+             (also in scenes with more than the 128 agents the input holds),
+             keeps the candidate goals, and moves a neighbour's distribution
+             more when the removed agent is near than when it is far
+  partner    which agent fills DenseTNT's second object-of-interest slot
+             barely matters (it is held fixed across with/without anyway)
 
 Example (from the repository root):
     python -m scripts.responsibility.verify_densetnt --scenes raw_scenes_500 --n 3
@@ -26,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-from responsibility.densetnt import DenseTNT, cat_instance  # noqa: E402  (sets up the pickle5 shim)
+from responsibility.densetnt import DenseTNT, cat_instance, goal_kl  # noqa: E402  (sets up the pickle5 shim)
 from responsibility.scene import Scene, cat_agent_order, scene_files, womd_features  # noqa: E402
 
 
@@ -106,6 +113,50 @@ def check_sampling(model, scene, report, n=4000):
                  f"mean |trajectory end - goal| {endpoint:.2f} m")
 
 
+def _vehicles_by_distance(scene, step, agent):
+    """Other vehicles observed at ``step``, nearest to ``agent`` first."""
+    others = [i for i in range(scene.n_agents)
+              if i != agent and scene.valid[i, step] and scene.types[i] == "VEHICLE"]
+    d = np.linalg.norm(scene.position[others, step, :2] - scene.position[agent, step, :2], axis=-1)
+    return [others[j] for j in np.argsort(d)], np.sort(d)
+
+
+def check_counterfactuals(model, scene, report, step=10):
+    ego = scene.sdc
+    neighbours, dist_to_ego = _vehicles_by_distance(scene, step, ego)
+    if len(neighbours) < 3:
+        report.check("removal", True, "skipped: fewer than 3 other vehicles")
+        return
+    b = neighbours[0]  # the ego's nearest vehicle: the natural courtesy target
+
+    first = model.distribution(scene, step, b, avoid_partner=(ego,))
+    again = model.distribution(scene, step, b, avoid_partner=(ego,))
+    report.check("repeat", float(goal_kl(first.log_prob, again.log_prob)) == 0.0,
+                 f"KL of a repeated pass {float(goal_kl(first.log_prob, again.log_prob)):.1e}")
+
+    with_ego = model.instance(scene, step, b, avoid_partner=(ego,))
+    without_ego = model.instance(scene, step, b, excluded=(ego,))
+    dropped = with_ego["map_start_polyline_idx"] - without_ego["map_start_polyline_idx"]
+    near = model.with_and_without(scene, step, b, ego)
+    kl_near = float(goal_kl(near[0].log_prob, near[1].log_prob))
+    others_of_b, d_b = _vehicles_by_distance(scene, step, b)
+    far = others_of_b[-1]
+    far_pair = model.with_and_without(scene, step, b, far)
+    kl_far = float(goal_kl(far_pair[0].log_prob, far_pair[1].log_prob))
+    report.check("removal", dropped == 1 and kl_near > kl_far,
+                 f"removing the ego drops {dropped} agent polyline(s); KL for vehicle {b} "
+                 f"({dist_to_ego[0]:.1f} m from the ego): without the ego {kl_near:.4f}, "
+                 f"without the farthest vehicle ({d_b[-1]:.0f} m) {kl_far:.4f} nats")
+
+    # partner: the ego's nearest vehicle predicted with two different partners
+    partner = model._partner(scene, step, b, avoid=(ego,))
+    p1 = model.distribution(scene, step, b, avoid_partner=(ego,))
+    p2 = model.distribution(scene, step, b, avoid_partner=(ego, partner))
+    kl_partner = float(goal_kl(p1.log_prob, p2.log_prob))
+    report.check("partner", kl_partner < 0.1 * max(kl_near, 1e-3),
+                 f"KL between two partner choices {kl_partner:.2e} nats (vs {kl_near:.4f} for removing the ego)")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scenes", default="raw_scenes_500")
@@ -123,6 +174,7 @@ def main():
         check_features(description, scene, report)
         check_cat_modes(model, description, scene, report)
         check_sampling(model, scene, report)
+        check_counterfactuals(model, scene, report)
     print("\nALL CHECKS PASSED" if report.ok else "\nSOME CHECKS FAILED")
     sys.exit(0 if report.ok else 1)
 
