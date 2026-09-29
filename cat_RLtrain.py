@@ -5,7 +5,8 @@ import argparse
 import os
 
 from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
-from advgen.adv_generator import AdvGenerator
+from advgen.adv_generator import AdvGenerator  # noqa: F401
+from responsibility.adversarial import make_adv_generator
 
 from saferl_algo import TD3,utils
 from saferl_plotter.logger import SafeLogger
@@ -81,7 +82,7 @@ if __name__ == "__main__":
 	parser.add_argument('--mode', choices=['replay','cat'],\
 						 help='Choose a mode (replay, cat)', default='cat')
 
-	adv_generator = AdvGenerator(parser)
+	adv_generator = make_adv_generator(parser)  # --adv_selection cat|constrained|penalized
 	args = parser.parse_args()
 
 	

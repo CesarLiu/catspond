@@ -4,14 +4,15 @@ from tqdm import trange
 import time
 from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
 from metadrive.policy.replay_policy import ReplayEgoCarPolicy
-from advgen.adv_generator import AdvGenerator
+from advgen.adv_generator import AdvGenerator  # noqa: F401
+from responsibility.adversarial import make_adv_generator
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--OV_traj_num', type=int,default=32)
     parser.add_argument('--AV_traj_num', type=int,default=1)
-    adv_generator = AdvGenerator(parser)
+    adv_generator = make_adv_generator(parser)  # --adv_selection cat|constrained|penalized
 
     args = parser.parse_args()
 
@@ -86,4 +87,6 @@ if __name__ == '__main__':
           pbar.set_postfix(avg_attack_success_rate=attack_cnt/(i+1),avg_compute_time=time_cost/(i+1)) # benchmarking the attack success rate and computational time
           break
 
+    if hasattr(adv_generator, "report"):
+      adv_generator.report()
     env.close()

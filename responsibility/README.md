@@ -176,6 +176,65 @@ fits on log(1 + β_c), which tames courtesy's heavy tail. Outputs: `hmm.pkl`,
 `bic.json`, `levels.csv` (every window with its level and posterior),
 `scenes_levels.csv`, `levels.png` (scatter by level, BIC curve).
 
+## Responsibility-constrained adversarial generation
+
+CAT picks, among DenseTNT's 32 trajectories for the adversary, the one
+maximising P(OV)·P(AV)·P(collision): whichever likely trajectory hits the ego.
+Often that is the adversary driving into the ego, a crash the adversary is to
+blame for and the ego could not have prevented.
+`responsibility/adversarial.py` also scores each candidate j by the
+adversary's **safety responsibility toward the ego**: the CVaR, over the
+adversary's own DenseTNT motion set, of how much more distance to the ego its
+alternatives would have kept than candidate j, over the full 8 s CAT checks,
+averaged over the ego trajectories CAT keeps. Low β means the adversary would
+plausibly drive this way anyway, so a collision is one the ego has to handle.
+
+| `--adv_selection` | rule |
+|---|---|
+| `cat` (default) | CAT's original generator, unchanged |
+| `constrained` | the highest collision score among candidates with β ≤ `--resp_threshold` (m); if none of them collides, the closest approach among them; if none qualifies, the least responsible candidate |
+| `penalized` | argmax collision score · exp(−max(β, 0) / `--resp_penalty`) |
+
+`cat_advgen.py` and `cat_RLtrain.py` take these options (e.g.
+`python cat_RLtrain.py --mode cat --adv_selection constrained --resp_threshold 1.0`);
+the generator is a drop-in subclass of CAT's `AdvGenerator`, and
+`cat_advgen.py` prints the collision rate and mean adversary responsibility of
+the chosen trajectories at the end. Courtesy responsibility is not used here:
+DenseTNT conditions on history only, so the adversary's influence on the ego's
+goals is the same for every candidate.
+
+Offline comparison (no MetaDrive), open-loop against the logged ego:
+
+```bash
+python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 \
+    --out logs/responsibility/advgen_benchmark.csv
+```
+
+It reports, per rule, how often the chosen trajectory is predicted to
+collide and the chosen adversaries' responsibility; it also reports the
+logged adversaries' own responsibility, to calibrate `--resp_threshold` on.
+On the first 20 scenes:
+
+| rule | predicted collision | adversary β mean / median |
+|---|---|---|
+| `cat` | 95% | +3.96 / +3.40 m |
+| `penalized` (1 m) | 95% | +2.81 / +1.59 m |
+| `constrained` 2 m | 50% | +0.98 / +1.00 m |
+| `constrained` 1 m | 30% | +0.51 / +0.56 m |
+| `constrained` 0.5 m | 15% | +0.10 / +0.06 m |
+| logged adversaries | – | median 0.00, q90 +0.35 m |
+
+CAT's adversaries give up metres of margin their own alternatives would have
+kept, far beyond anything the logged adversaries do. Asking them to stay
+within logged-like responsibility costs attack success; the collisions that
+remain are the ones the ego has to handle.
+It also checks that the `cat` rule reproduces `AdvGenerator.generate` exactly
+(CAT's own code run on the same candidates), and it runs the drop-in
+generator the way CAT's scripts call it. Candidates are the adversary
+predicted on its own; CAT batches it with the ego, which moves the prediction
+slightly (see Design decisions), so every rule chooses among the same
+candidates.
+
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 
 | component | version | why |
