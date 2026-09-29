@@ -8,17 +8,18 @@ filter (Eq. 6).
   --fit-runs  runs whose windows fit the HMM (default: all --runs); use
               logged driving here when labelling a policy's run
 
-A window is aggressive when its level is in the upper part of the scale
-(--aggressive-levels, default the upper half: with 4 levels, levels 2 and 3),
-a scene when at least --scene-share of its windows are. Levels are relative to
-the fitted population, so on that population a share of windows is aggressive
-by construction; what carries information is comparing runs -- e.g. a
-policy's share of aggressive windows against logged driving's. The upper half, not just the top level:
-the levels found on logged driving separate *kinds* of aggressiveness -- one
-elevated in safety responsibility (giving up margin), another in courtesy
-(changing others' plans) -- and the ordering alone does not say which kind is
-worse. Each level is reported with the dimension it is elevated in. Writes
-to --out-dir:
+A window is aggressive when its level stands out from the calmest level by
+more than half a spread (the feature's standard deviation over the fitted
+windows) in safety or in courtesy responsibility, and a scene when at least
+--scene-share of its windows are; --aggressive-levels K instead takes the
+top K levels. Not just the top level: the levels found on logged driving
+separate *kinds* of aggressiveness -- one elevated in safety responsibility
+(giving up margin), another in courtesy (changing others' plans) -- and the
+ordering alone does not say which kind is worse. Each level is reported with
+the dimension it is elevated in. Levels are relative to the fitted
+population, so what carries information is comparing runs -- e.g. a
+policy's share of aggressive windows against logged driving's. Writes to
+--out-dir:
 
   hmm.pkl            the fitted, relabelled HMM (+ feature settings)
   bic.json           BIC for every H tried
@@ -43,7 +44,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 
 from responsibility.hmm import fit_hmm_with_model_selection  # noqa: E402
-from responsibility.levels import assign_levels, level_table, relabel_by_aggressiveness  # noqa: E402
+from responsibility.levels import (  # noqa: E402
+    assign_levels,
+    elevated_levels,
+    level_table,
+    relabel_by_aggressiveness,
+)
 from responsibility.results import features, read_windows, sequences  # noqa: E402
 
 
@@ -58,7 +64,7 @@ def parse_args():
     p.add_argument("--log-courtesy", action="store_true",
                    help="Fit on log(1 + courtesy): courtesy is heavy-tailed (a few windows of several nats).")
     p.add_argument("--aggressive-levels", type=int, default=None,
-                   help="How many top levels count as aggressive (default: half of them, rounded down, >= 1).")
+                   help="Count the top K levels as aggressive (default: the levels elevated in safety or courtesy).")
     p.add_argument("--scene-share", type=float, default=0.5,
                    help="Share of a scene's windows in aggressive levels that makes the scene aggressive.")
     return p.parse_args()
@@ -81,8 +87,10 @@ def main():
     hmm = selection.best_model
     scale = np.concatenate(fit_seqs).std(axis=0)
     relabel_by_aggressiveness(hmm, scale)
-    n_top = args.aggressive_levels if args.aggressive_levels is not None else max(1, hmm.n_states // 2)
-    top = set(range(hmm.n_states - n_top, hmm.n_states))
+    if args.aggressive_levels is not None:
+        top = set(range(hmm.n_states - args.aggressive_levels, hmm.n_states))
+    else:
+        top = set(elevated_levels(hmm, scale))
     for h, bic in zip(selection.n_states_grid, selection.bic_by_n_states):
         print(f"  H={h}: BIC {bic:.1f}{'  <- selected' if h == selection.best_n_states else ''}")
 

@@ -45,7 +45,10 @@ def assign_levels(hmm: GaussianHMM, sequences: Sequence[np.ndarray]) -> List[Tup
     return out
 
 
-def elevated_in(hmm: GaussianHMM, scale: np.ndarray, calm: float = 0.25) -> List[str]:
+ELEVATED = 0.5  # spreads above the calmest level that make a level stand out
+
+
+def elevated_in(hmm: GaussianHMM, scale: np.ndarray, calm: float = ELEVATED) -> List[str]:
     """Per level, which responsibility it stands out in, relative to the
     calmest level and in units of ``scale``: "safety", "courtesy", "both", or
     "-" when neither exceeds ``calm`` spreads."""
@@ -56,6 +59,12 @@ def elevated_in(hmm: GaussianHMM, scale: np.ndarray, calm: float = 0.25) -> List
         high = z > calm
         out.append("both" if high.all() else "safety" if high[0] else "courtesy" if high[1] else "-")
     return out
+
+
+def elevated_levels(hmm: GaussianHMM, scale: np.ndarray, calm: float = ELEVATED) -> List[int]:
+    """Levels that stand out from the calmest one in safety or courtesy
+    responsibility: the aggressive levels, whichever kind."""
+    return [z for z, kind in enumerate(elevated_in(hmm, scale, calm)) if kind != "-"]
 
 
 def level_table(hmm: GaussianHMM, level_counts: Dict[str, np.ndarray], scale: np.ndarray) -> List[Dict]:

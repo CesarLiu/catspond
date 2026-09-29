@@ -88,7 +88,7 @@ def test_fit_levels_end_to_end(tmp_path, monkeypatch, capsys):
     fit_levels.main()
     saved = pickle.load(open(out / "hmm.pkl", "rb"))
     h = saved["hmm"].n_states
-    assert h >= 2 and saved["aggressive_levels"] == list(range(h - max(1, h // 2), h))
+    assert h >= 2 and 0 not in saved["aggressive_levels"] and h - 1 in saved["aggressive_levels"]
     with open(out / "scenes_levels.csv") as f:
         policy = {r["scene"]: int(r["aggressive"]) for r in csv.DictReader(f) if r["run"] == "policy"}
     assert policy == {"0": 1, "1": 0}
@@ -101,3 +101,6 @@ def test_levels_report_what_they_are_elevated_in():
     hmm = GaussianHMM(n_states=4, n_features=2)
     hmm.means_ = np.array([[0.0, 0.0], [0.02, 0.01], [1.0, 0.05], [0.9, 1.1]])
     assert elevated_in(hmm, np.array([0.5, 0.5])) == ["-", "-", "safety", "both"]
+    from responsibility.levels import elevated_levels
+
+    assert elevated_levels(hmm, np.array([0.5, 0.5])) == [2, 3]

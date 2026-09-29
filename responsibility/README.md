@@ -6,7 +6,7 @@ aggressively, using the counterfactual responsibility metrics of Hsu et al.,
 Counterfactual Responsibility"](https://saferobotics.princeton.edu/research/responsibility)
 (IROS 2023), with CAT's pretrained DenseTNT as the model of what drivers do.
 It is a port of the SMART/WOMD implementation in the `catk` repository; the
-geometry and CVaR code are shared verbatim.
+geometry, CVaR and HMM code are shared verbatim.
 
 At every context step k of a scene (every 0.5–1 s):
 
@@ -82,6 +82,71 @@ Windows below `--min-speed` (1 m/s) are not judged.
 To evaluate a trajectory produced in simulation instead of the log (e.g. the
 ego of a CAT-trained policy), replace the agent's track before computing:
 `Scene.with_track(agent, positions, headings, velocities)` over the 91 steps.
+
+## Responsibility levels
+
+Thresholds say "more than X"; levels say what kinds of behaviour logged
+driving contains. `fit_levels` fits a Gaussian HMM (paper Sec. IV-A; catk's
+implementation) over the (β_s, β_c) sequences of one or more runs, chooses
+the number of levels by BIC, orders them from calmest (0) to most aggressive,
+and labels every window with the causal Bayes filter (Eq. 6):
+
+```bash
+python -m scripts.responsibility.fit_levels --runs logs/responsibility/sdc logs/responsibility/adv \
+    --out-dir logs/responsibility/levels
+# judge a policy against levels learned from logged driving
+python -m scripts.responsibility.fit_levels --runs logs/responsibility/sdc logs/responsibility/policy \
+    --fit-runs logs/responsibility/sdc --out-dir logs/responsibility/levels_policy
+```
+
+On 20 logged scenes (self-driving car, 1 s windows) it finds 4 levels:
+
+| level | β_s (m) | β_c (nats) | share | elevated in |
+|---|---|---|---|---|
+| 0 | 0.00 | 0.02 | 51% | – (calm) |
+| 1 | 0.01 | 0.16 | 19% | – (mild courtesy, below half a spread) |
+| 2 | 0.44 | 0.12 | 23% | safety: margin given up |
+| 3 | 0.05 | 0.80 | 7% | courtesy: others' plans changed |
+
+The levels separate *kinds* of aggressiveness rather than forming one
+ranking, so every level that stands out from the calmest one by more than
+half a spread (the feature's standard deviation over the fitted windows) in
+safety or in courtesy counts as aggressive (here levels 2 and 3;
+`--aggressive-levels K` takes the top K instead), and a scene counts when at
+least `--scene-share` (50%) of its windows are. Because levels are relative to the fitted population, the
+informative output is the comparison between runs: each run's share of
+windows per level (printed, and in `scenes_levels.csv`). `--log-courtesy`
+fits on log(1 + β_c), which tames courtesy's heavy tail. Outputs: `hmm.pkl`,
+`bic.json`, `levels.csv` (every window with its level and posterior),
+`scenes_levels.csv`, `levels.png` (scatter by level, BIC curve).
+
+## GPU server (e.g. Ubuntu 24.04 + H200)
+
+| component | version | why |
+|---|---|---|
+| Python | **3.9** | `advgen/utils_cython.cpython-39-*.so` is prebuilt for it (rebuilding needs Cython and a compiler); TF 2.12 supports it |
+| torch | **2.4.1 + CUDA 12.1** (not CAT's 1.12.0+cu116) | 1.12/cu116 has no Hopper (sm_90) kernels; 2.4.1 still has Python 3.9 wheels and loads `densetnt.bin` unchanged |
+| torchvision | 0.19.1 (matches torch 2.4.1) | DenseTNT's raster CNN |
+| tensorflow-cpu | 2.12.0 | only builds DenseTNT's input tensors; the CPU build stays off the GPU |
+| numpy | < 1.24 | required by TF 2.12 |
+
+```bash
+bash scripts/responsibility/setup_env.sh          # uv venv at ~/venvs/cat39 (BACKEND=conda also works)
+source ~/venvs/cat39/bin/activate
+python -m pytest tests/responsibility -q
+python -m scripts.responsibility.verify_densetnt --n 3 --device cuda   # must end with ALL CHECKS PASSED
+bash scripts/responsibility/run_h200.sh           # step 2: sdc + adv over 500 scenes, summaries, levels
+```
+
+`run_h200.sh` starts `SHARDS` (16) processes per agent, spread over the
+visible GPUs, each taking every SHARDS-th scene (`--num-shards/--shard-index`)
+and writing its own `windows.shard-<i>-of-<n>.csv`; logs are in
+`OUT/<agent>/logs/`. Building DenseTNT's inputs is CPU work, so many
+processes share one GPU and CPU threads are divided between them. Re-running
+the same command resumes. On a laptop CPU a scene takes ~1 min per agent at
+1 s windows; check the first lines of a shard log for the rate on the server
+and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
+`SCENES`, `N`, `AGENTS`, `SHARDS`, `STRIDE` (0.5 s), `SAMPLES`.
 
 ## Design decisions
 
