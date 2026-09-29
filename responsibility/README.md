@@ -30,7 +30,7 @@ built for it) plus `pytest`. Without conda, a CPU environment with
 uv python install 3.9
 uv venv --python 3.9 --seed ~/venvs/cat39 && source ~/venvs/cat39/bin/activate
 uv pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build
-uv pip install "tensorflow-cpu==2.12.0" "numpy<1.24" pyyaml matplotlib tqdm pytest scipy
+uv pip install "tensorflow-cpu==2.12.0" "numpy<1.24" pyyaml matplotlib tqdm pytest scipy     "opencv-python-headless==4.7.0.72"   # MP4 videos; without it the visualisation writes GIF only
 ```
 
 MetaDrive is not needed: scenes are read straight from `raw_scenes_500/*.pkl`.
@@ -92,7 +92,8 @@ python -m scripts.responsibility.visualize_responsibility --scene 17 \
 ```
 
 One frame per context step t_k (`frames/t_XXX.png`), stitched into
-`responsibility.gif` (and `.mp4` with OpenCV installed). Each frame shows:
+`responsibility.gif` and `responsibility.mp4` (the MP4 needs OpenCV,
+`opencv-python-headless`, which `setup_env.sh` installs). Each frame shows:
 
 - **scene:** the map, every agent at t_k with 1 s of history, the agent's
   motion set (DenseTNT goal samples; the first 2 s solid, coloured by goal
@@ -153,6 +154,7 @@ fits on log(1 + β_c), which tames courtesy's heavy tail. Outputs: `hmm.pkl`,
 | torchvision | 0.19.1 (matches torch 2.4.1) | DenseTNT's raster CNN |
 | tensorflow-cpu | 2.12.0 | only builds DenseTNT's input tensors; the CPU build stays off the GPU |
 | numpy | < 1.24 | required by TF 2.12 |
+| opencv-python-headless | 4.7.0.72 (CAT's opencv version, without GUI) | MP4 output of the visualisation; without it only the GIF is written |
 
 ```bash
 bash scripts/responsibility/setup_env.sh          # uv venv at ~/venvs/cat39 (BACKEND=conda also works)

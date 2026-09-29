@@ -12,6 +12,9 @@
 #   tensorflow-cpu 2.12   only used to build DenseTNT's input tensors; the CPU
 #                build keeps TensorFlow off the GPU
 #   numpy < 1.24 required by TF 2.12
+#   opencv-python-headless 4.7.0.72   MP4 videos from visualize_responsibility.py
+#                (CAT pins opencv-python 4.7.0.72; the headless build needs no
+#                display); without it the videos are GIF only
 # MetaDrive and the RL stack are not needed for responsibility.
 #
 # usage (from the repository root):
@@ -55,7 +58,7 @@ case "$BACKEND" in
 esac
 
 $PIP install "torch==2.4.1" "torchvision==0.19.1" --index-url "https://download.pytorch.org/whl/$CUDA_TAG"
-$PIP install "tensorflow-cpu==2.12.0" "numpy<1.24" pyyaml matplotlib tqdm pytest scipy
+$PIP install "tensorflow-cpu==2.12.0" "numpy<1.24" pyyaml matplotlib tqdm pytest scipy   "opencv-python-headless==4.7.0.72"
 
 python - <<'PY'
 import pickle, sys
