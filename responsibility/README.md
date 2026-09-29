@@ -237,6 +237,9 @@ candidates.
 
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 
+The full sequence of experiments on the server, step by step, is in
+[RUNBOOK_H200.md](RUNBOOK_H200.md) (in Chinese).
+
 | component | version | why |
 |---|---|---|
 | Python | **3.9** | `advgen/utils_cython.cpython-39-*.so` is prebuilt for it (rebuilding needs Cython and a compiler); TF 2.12 supports it |

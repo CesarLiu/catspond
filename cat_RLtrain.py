@@ -87,7 +87,10 @@ if __name__ == "__main__":
 
 	
 	file_name = args.mode
-	logger = SafeLogger(exp_name=args.mode, env_name=args.env, seed=args.seed,
+	if args.mode == 'cat' and args.adv_selection != 'cat':  # responsibility-constrained adversary
+		file_name += f"_{args.adv_selection}" + (f"{args.resp_threshold:g}" if args.adv_selection == 'constrained'
+												else f"{args.resp_penalty:g}")
+	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
 						fieldnames=['route_completion_normal','crash_rate_normal','route_completion_adv','crash_rate_adv'])
 
 	if args.save_model and not os.path.exists("./models"):

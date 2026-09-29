@@ -15,6 +15,10 @@
 #   SHARDS   processes per agent                       (16)
 #   STRIDE   steps between context windows (0.1 s)     (5)
 #   SAMPLES  DenseTNT samples per window (safety)      (40)
+#   RECORDS  1: also write per-scene records for offline
+#            inspection/visualisation (--save-records)  (0)
+#   EXTRA    further compute_responsibility.py flags    ("")
+#            e.g. EXTRA="--horizon 30 --d-sat 15"
 #
 # The work per window is mostly CPU (building DenseTNT's inputs) plus small GPU
 # passes, so many processes share a GPU; SHARDS x len(AGENTS) processes are
@@ -30,6 +34,9 @@ AGENTS=${AGENTS:-"sdc adv"}
 SHARDS=${SHARDS:-16}
 STRIDE=${STRIDE:-5}
 SAMPLES=${SAMPLES:-40}
+RECORDS=${RECORDS:-0}
+read -r -a EXTRA_ARGS <<< "${EXTRA:-}"
+[ "$RECORDS" = 1 ] && EXTRA_ARGS+=(--save-records)
 
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
   IFS=',' read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
@@ -60,7 +67,7 @@ for agent in "${AGENT_LIST[@]}"; do
     CUDA_VISIBLE_DEVICES=$gpu python -m scripts.responsibility.compute_responsibility \
       --scenes "$SCENES" --n "$N" --agent "$agent" --out-dir "$OUT/$agent" \
       --stride "$STRIDE" --n-samples "$SAMPLES" --device "$device" \
-      --num-shards "$SHARDS" --shard-index "$i" > "$OUT/$agent/logs/shard_$i.log" 2>&1 &
+      --num-shards "$SHARDS" --shard-index "$i" "${EXTRA_ARGS[@]}" > "$OUT/$agent/logs/shard_$i.log" 2>&1 &
     pids+=($!)
     names+=("$agent shard $i")
   done

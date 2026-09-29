@@ -15,6 +15,9 @@ checking that adv_traj has CAT's format.
 Example (from the repository root):
     python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 \\
         --out logs/responsibility/advgen_benchmark.csv
+
+Parts run in parallel (--first/--n, one --out each) are combined with
+    python -m scripts.responsibility.benchmark_advgen --summarize part_*.csv
 """
 
 import argparse
@@ -52,6 +55,8 @@ def parse_args():
     p.add_argument("--horizon", type=int, default=80)
     p.add_argument("--out", default=None, help="CSV with one row per scene and rule.")
     p.add_argument("--no-cat-check", action="store_true")
+    p.add_argument("--summarize", nargs="+", default=None, metavar="CSV",
+                   help="Only print the summary of existing --out CSVs (e.g. parts run in parallel).")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -130,8 +135,28 @@ def check_drop_in(gen, description, scene, seed):
     return ok
 
 
+def summarize(rows):
+    print(f"\n{len({r['scene'] for r in rows})} scenes, open-loop against the logged ego")
+    print(f"{'rule':>16} {'collision':>10} {'mean beta':>10} {'median beta':>12}")
+    for name in dict.fromkeys(r["rule"] for r in rows):
+        rs = [r for r in rows if r["rule"] == name]
+        b = np.array([float(r["beta"]) for r in rs])
+        hit = np.mean([int(r["collision"]) for r in rs])
+        print(f"{name:>16} {100 * hit:9.0f}% {b.mean():+10.2f} {np.median(b):+12.2f}")
+    logged = np.array([float(v) for _, v in sorted({(r["scene"], r["logged_adversary_beta"]) for r in rows})])
+    print(f"logged adversary beta: median {np.median(logged):+.2f}, q75 {np.quantile(logged, 0.75):+.2f}, "
+          f"q90 {np.quantile(logged, 0.9):+.2f} m  (thresholds can be calibrated on these)")
+
+
 def main():
     args = parse_args()
+    if args.summarize:
+        rows = []
+        for path in args.summarize:
+            with open(path) as f:
+                rows.extend(csv.DictReader(f))
+        summarize(rows)
+        return
     cat_parser = argparse.ArgumentParser()  # as cat_advgen.py builds it
     cat_parser.add_argument("--OV_traj_num", type=int, default=32)
     cat_parser.add_argument("--AV_traj_num", type=int, default=1)
@@ -171,15 +196,7 @@ def main():
             line.append(f"{name}: {'HIT' if score[j] > 0 else 'miss'} beta {beta[j]:+.2f}")
         print("  ".join(line), flush=True)
 
-    print(f"\n{len({r['scene'] for r in rows})} scenes, open-loop against the logged ego")
-    print(f"{'rule':>16} {'collision':>10} {'mean beta':>10} {'median beta':>12}")
-    for name in dict.fromkeys(r["rule"] for r in rows):
-        rs = [r for r in rows if r["rule"] == name]
-        b = np.array([r["beta"] for r in rs])
-        print(f"{name:>16} {100 * np.mean([r['collision'] for r in rs]):9.0f}% {b.mean():+10.2f} {np.median(b):+12.2f}")
-    logged = np.array(sorted({(r["scene"], r["logged_adversary_beta"]) for r in rows}))[:, 1].astype(float)
-    print(f"logged adversary beta: median {np.median(logged):+.2f}, q75 {np.quantile(logged, 0.75):+.2f}, "
-          f"q90 {np.quantile(logged, 0.9):+.2f} m  (thresholds can be calibrated on these)")
+    summarize(rows)
     if cat_agree:
         print(f"cat rule reproduces AdvGenerator.generate: {sum(cat_agree)}/{len(cat_agree)} scenes")
     if args.out:
