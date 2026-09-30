@@ -20,9 +20,18 @@ skips finished scenes; OUT/config.json pins the settings. With
 --num-shards N --shard-index i, N processes split the scenes round-robin into
 the same OUT, each writing windows.shard-<i>-of-<N>.csv (run_h200.sh does this).
 
+With --rollouts DIR it measures a driving policy instead of the log: every
+rollout in DIR (collect_rollouts.py) is played back into its scene -- the
+simulated ego (and adversary) in place of the logged ones, objects the
+simulator did not spawn removed (responsibility/rollouts.py) -- and the ego
+is queried there. Windows stop where the episode did: at a collision, or a
+full metric horizon before any other end.
+
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
         --out-dir logs/responsibility/sdc --n 50
+    python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
+        --rollouts rollouts/td3_cat/none --out-dir logs/responsibility/policies/td3_cat/none
 """
 
 import argparse
@@ -44,6 +53,13 @@ from responsibility.densetnt import DenseTNT  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
 from responsibility.records import run_scene, save_record  # noqa: E402
+from responsibility.rollouts import (  # noqa: E402
+    last_window_step,
+    load_rollout,
+    outcome,
+    rollout_files,
+    scene_from_rollout,
+)
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
@@ -53,8 +69,10 @@ ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safe
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scenes", default="raw_scenes_500")
+    p.add_argument("--rollouts", default=None,
+                   help="Directory of a policy's rollouts (collect_rollouts.py): measure them instead of the log.")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--first", type=int, default=0, help="Index of the first scene file.")
+    p.add_argument("--first", type=int, default=0, help="Index of the first scene (or rollout) file.")
     p.add_argument("--n", type=int, default=None, help="Number of scenes (default: all).")
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--shard-index", type=int, default=0)
@@ -103,6 +121,8 @@ def main():
     out = Path(args.out_dir)
     (out / "obs").mkdir(parents=True, exist_ok=True)
     settings = {"responsibility": asdict(cfg), "agent": args.agent, "scenes": str(Path(args.scenes).resolve())}
+    if args.rollouts:
+        settings["rollouts"] = str(Path(args.rollouts).resolve())
     config_path = out / "config.json"
     if config_path.exists():
         if json.loads(config_path.read_text()) != json.loads(json.dumps(settings)):
@@ -112,7 +132,7 @@ def main():
         tmp.write_text(json.dumps(settings, indent=2))
         os.replace(tmp, config_path)
 
-    files = scene_files(args.scenes)[args.first:]
+    files = (rollout_files(args.rollouts) if args.rollouts else scene_files(args.scenes))[args.first:]
     if args.n is not None:
         files = files[: args.n]
     files = files[args.shard_index :: args.num_shards]
@@ -134,7 +154,13 @@ def main():
             writer.writeheader()
         for n, path in enumerate(todo, 1):
             t0 = time.time()
-            scene = Scene.load(path)
+            rollout, last_step = None, None
+            if args.rollouts:
+                rollout = load_rollout(path)
+                scene = scene_from_rollout(Scene.load(Path(args.scenes) / f"{rollout['scene_file']}.pkl"), rollout)
+                last_step = last_window_step(rollout, cfg.metric_horizon)
+            else:
+                scene = Scene.load(path)
             try:
                 agent = pick_agent(scene, args.agent)
             except ValueError as e:
@@ -142,11 +168,13 @@ def main():
                 observations = []
             else:
                 if args.save_records:
-                    observations, record = run_scene(model, scene, agent, cfg, args.top_mass)
+                    observations, record = run_scene(model, scene, agent, cfg, args.top_mass, last_step)
                     record["scene_file"] = path.stem
+                    if rollout is not None:
+                        record["rollout"] = outcome(rollout)
                     save_record(record, out / "records" / f"{path.stem}.pkl")
                 else:
-                    observations = scene_responsibility(model, scene, agent, cfg)
+                    observations = scene_responsibility(model, scene, agent, cfg, last_step)
             for obs in observations:
                 writer.writerow({"scene": path.stem, **obs.as_row()})
             handle.flush()

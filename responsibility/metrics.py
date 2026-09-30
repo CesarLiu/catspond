@@ -85,10 +85,12 @@ def effective_horizon(scene: Scene, step: int, cfg: ResponsibilityConfig) -> int
     return max(0, min(cfg.metric_horizon, scene.n_steps - 1 - step))
 
 
-def window_steps(scene: Scene, agent: int, cfg: ResponsibilityConfig) -> List[int]:
+def window_steps(scene: Scene, agent: int, cfg: ResponsibilityConfig, last_step: Optional[int] = None) -> List[int]:
     """Context steps at which ``agent`` is observed and a full metric horizon
-    of log remains."""
+    of log remains (and, if given, not after ``last_step``)."""
     last = scene.n_steps - 1 - cfg.metric_horizon
+    if last_step is not None:
+        last = min(last, last_step)
     return [k for k in range(FIRST_STEP, last + 1, cfg.window_stride) if scene.valid[agent, k]]
 
 
@@ -164,14 +166,16 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
 
 
 def scene_responsibility(model, scene: Scene, agent: Optional[int] = None,
-                         cfg: Optional[ResponsibilityConfig] = None) -> List[Observation]:
+                         cfg: Optional[ResponsibilityConfig] = None,
+                         last_step: Optional[int] = None) -> List[Observation]:
     """Responsibility of ``agent`` (default: the self-driving car) at every
-    evaluated context step of the scene."""
+    evaluated context step of the scene (up to ``last_step``, e.g. the end of
+    a simulated episode: responsibility.rollouts.last_window_step)."""
     cfg = cfg or ResponsibilityConfig()
     agent = scene.sdc if agent is None else agent
     generator = torch.Generator().manual_seed(cfg.seed)
     out = []
-    for step in window_steps(scene, agent, cfg):
+    for step in window_steps(scene, agent, cfg, last_step):
         obs = responsibility_at(model, scene, agent, step, cfg, generator)
         if obs is not None:
             out.append(obs)

@@ -86,12 +86,12 @@ def capture_frame(model, scene: Scene, agent: int, step: int, cfg: Responsibilit
 
 
 def run_scene(model, scene: Scene, agent: int, cfg: ResponsibilityConfig,
-              top_mass: float = 0.99) -> Tuple[List[Observation], Dict]:
+              top_mass: float = 0.99, last_step: Optional[int] = None) -> Tuple[List[Observation], Dict]:
     """Every window of the scene, as ``metrics.scene_responsibility`` computes
     them (same random stream, same values), plus the scene's record."""
     generator = torch.Generator().manual_seed(cfg.seed)
     observations, frames = [], []
-    for step in window_steps(scene, agent, cfg):
+    for step in window_steps(scene, agent, cfg, last_step):
         obs, frame = capture_frame(model, scene, agent, step, cfg, generator, top_mass)
         if obs is not None:
             observations.append(obs)

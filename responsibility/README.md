@@ -46,8 +46,9 @@ python -m scripts.responsibility.verify_densetnt --n 5         # against CAT on 
 and reproduces its 32 adversary trajectories (to ~1e-12 m), that goal sampling
 matches the goal distribution, that repeated passes agree exactly, that
 removing an agent drops exactly its polyline and moves a nearby vehicle's
-distribution more than a far one, and that DenseTNT's partner slot is
-immaterial (~1e-7 nats).
+distribution more than a far one, that DenseTNT's partner slot is
+immaterial (~1e-7 nats), and that a replayed rollout (below) gives the logged
+values once the objects MetaDrive does not spawn are left out.
 
 ## Is the ego aggressive?
 
@@ -234,6 +235,35 @@ generator the way CAT's scripts call it. Candidates are the adversary
 predicted on its own; CAT batches it with the ego, which moves the prediction
 slightly (see Design decisions), so every rule chooses among the same
 candidates.
+
+## Driving policies (rollouts)
+
+The same measurements apply to a policy driving in MetaDrive. A **rollout**
+(`responsibility/rollouts.py`; recorded by `collect_rollouts.py` on the
+server) holds what happened in one scene: the ego's simulated states per
+0.1 s step, the adversary's if CAT placed one, which logged objects the
+simulator spawned, and how the episode ended. `--rollouts DIR` plays each
+rollout back into its scene and queries the simulated ego:
+
+```bash
+python -m scripts.responsibility.compute_responsibility --rollouts rollouts/td3_cat/none \
+    --out-dir logs/responsibility/policies/td3_cat/none
+```
+
+In the rebuilt scene the ego (and the adversary) follow the simulation and
+end with the episode; objects the simulator never spawned are removed
+(CAT runs MetaDrive with `no_static_vehicles`, which drops every vehicle
+whose logged positions spread less than 3 m); everything else keeps its
+logged states, since CAT's traffic is not reactive. Windows run up to a
+collision (the window must see it), or stop a full metric horizon before
+any other end of the episode (what the ego would have done afterwards is
+unknown). Outputs are those of a logged run, so summaries, levels and
+records work unchanged.
+
+Removing parked vehicles changes the values (on scene 1, with 70 of them,
+safety moves by 0.4 m on average), so compare a policy against **the
+replayed log** (`--policy replay` rollouts), not against the plain logged
+run: that is the logged driving in the scene the policy actually saw.
 
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 

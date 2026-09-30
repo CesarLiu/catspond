@@ -16,6 +16,10 @@
              more when the removed agent is near than when it is far
   partner    which agent fills DenseTNT's second object-of-interest slot
              barely matters (it is held fixed across with/without anyway)
+  rollout    a perfectly replayed rollout, played back into its scene, gives
+             the logged values once the objects MetaDrive does not spawn
+             (static vehicles) are left out; how much leaving them out
+             changes the values is printed for information
 
 Example (from the repository root):
     python -m scripts.responsibility.verify_densetnt --scenes raw_scenes_500 --n 3
@@ -34,7 +38,8 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from responsibility.densetnt import DenseTNT, cat_instance  # noqa: E402  (sets up the pickle5 shim)
-from responsibility.metrics import goal_kl  # noqa: E402
+from responsibility.metrics import ResponsibilityConfig, goal_kl, scene_responsibility  # noqa: E402
+from responsibility.rollouts import not_spawned, replay_rollout, scene_from_rollout  # noqa: E402
 from responsibility.scene import Scene, cat_agent_order, scene_files, womd_features  # noqa: E402
 
 
@@ -158,6 +163,28 @@ def check_counterfactuals(model, scene, report, step=10):
                  f"KL between two partner choices {kl_partner:.2e} nats (vs {kl_near:.4f} for removing the ego)")
 
 
+def check_rollout(model, scene, report, stride=20):
+    cfg = ResponsibilityConfig(window_stride=stride)
+    dropped = not_spawned(scene)
+    masked_valid = scene.valid.copy()
+    masked_valid[dropped] = False
+    masked = Scene(**{**scene.__dict__, "valid": masked_valid})
+    played = scene_from_rollout(scene, replay_rollout(scene))
+    same = all(np.array_equal(getattr(played, k), getattr(masked, k))
+               for k in ("position", "heading", "velocity", "valid"))
+    report.check("rollout", same, f"replayed rollout = log without {len(dropped)} unspawned object(s)")
+    a = scene_responsibility(model, played, scene.sdc, cfg)
+    b = scene_responsibility(model, masked, scene.sdc, cfg)
+    c = scene_responsibility(model, scene, scene.sdc, cfg)
+    equal = [(o.step, o.safety, o.courtesy) for o in a] == [(o.step, o.safety, o.courtesy) for o in b]
+    report.check("rollout", equal, f"{len(a)} windows, identical values")
+    ds = [abs(x.safety - y.safety) for x, y in zip(a, c)]
+    dc = [abs(x.courtesy - y.courtesy) for x, y in zip(a, c)]
+    print(f"  [info] leaving the unspawned objects out moves safety by {np.mean(ds):.3f} m on average "
+          f"(max {max(ds, default=0):.3f}), courtesy by {np.mean(dc):.4f} nats (max {max(dc, default=0):.4f})",
+          flush=True)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scenes", default="raw_scenes_500")
@@ -176,6 +203,7 @@ def main():
         check_cat_modes(model, description, scene, report)
         check_sampling(model, scene, report)
         check_counterfactuals(model, scene, report)
+        check_rollout(model, scene, report)
     print("\nALL CHECKS PASSED" if report.ok else "\nSOME CHECKS FAILED")
     sys.exit(0 if report.ok else 1)
 
