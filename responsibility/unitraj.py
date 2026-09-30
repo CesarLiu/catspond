@@ -419,14 +419,20 @@ def mtr_predictor(checkpoint, config: Optional[AttrDict] = None, device: str = "
     model.to(device).eval()
 
     @torch.no_grad()
-    def predict(batch):
+    def raw(batch):
+        """MTR's final scores [B, M] and full trajectories [B, M, T, 7]."""
         inputs = batch["input_dict"]
         for k, v in inputs.items():
             if torch.is_tensor(v):
                 inputs[k] = v.to(device)
         out = model.motion_decoder(model.context_encoder(batch))
-        return out["pred_scores"], out["pred_trajs"][..., :2]
+        return out["pred_scores"], out["pred_trajs"]
 
+    def predict(batch):
+        scores, trajs = raw(batch)
+        return scores, trajs[..., :2]
+
+    predict.model, predict.raw = model, raw  # for verify_unitraj.py
     return predict
 
 

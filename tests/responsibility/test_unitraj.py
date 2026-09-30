@@ -178,3 +178,62 @@ def test_the_weighted_motion_set_runs_on_the_adapter():
     _, record = run_scene(_model(), scene, scene.sdc, ResponsibilityConfig(window_stride=20, motion_set="weighted"))
     frame = next(f for f in record["frames"] if f["metric_samples"])
     assert frame["samples"].shape == (K, 80, 2)
+
+
+def test_dropping_a_track():
+    scene = _scene()
+    dropped = scene.drop([scene.index("2")])
+    assert dropped.track_ids == ["0", "1", "3", "4"] and dropped.sdc == 0
+    np.testing.assert_array_equal(dropped.position[2], scene.position[3])
+    with pytest.raises(ValueError):
+        scene.drop([scene.sdc])
+
+
+def test_verify_checks_pass_on_a_permutation_invariant_model(capsys):
+    from types import SimpleNamespace
+
+    from scripts.responsibility import verify_unitraj as ver
+
+    report = ver.Report()
+    ver.check_scene(_model(), _scene(), 30, report, SimpleNamespace(tol_logp=1e-4, tol_traj=1e-3))
+    out = capsys.readouterr().out
+    assert report.ok, out
+    assert out.count("[PASS] removal") == 2 and "[PASS] batch" in out and "[PASS] repeat" in out
+
+
+def test_calibration_recovers_a_known_temperature():
+    from scripts.responsibility import calibrate_unitraj as cal
+
+    rng = np.random.default_rng(0)
+    logits = rng.normal(0, 2.0, size=(4000, K))
+    true_t = 1.7  # the targets follow softmax(logits / 1.7): the raw scores are overconfident
+    p = torch.softmax(torch.as_tensor(logits) / true_t, -1).numpy()
+    targets = np.array([rng.choice(K, p=row) for row in p])
+    t = cal.fit_temperature(logits, targets)
+    assert t == pytest.approx(true_t, rel=0.1)
+    assert cal.summary(logits, targets, t)["nll"] < cal.summary(logits, targets, 1.0)["nll"]
+    assert cal.summary(logits, targets, t)["ece"] < cal.summary(logits, targets, 1.0)["ece"]
+    assert cal.ece(np.eye(3)[[0, 1, 2]], np.array([0, 1, 2])) == pytest.approx(0.0)
+
+
+def test_calibration_collects_targets_from_scenarionet_files(tmp_path):
+    import pickle
+
+    from scripts.responsibility import calibrate_unitraj as cal
+
+    for name, sid in (("sd_waymo_a.pkl", "keep"), ("sd_waymo_b.pkl", "cat-scene")):
+        desc = _scene().to_description()
+        desc["metadata"]["scenario_id"] = sid
+        desc["metadata"]["tracks_to_predict"] = {"1": {}, "4": {}}
+        with open(tmp_path / name, "wb") as f:
+            pickle.dump(desc, f)
+    (tmp_path / "dataset_summary.pkl").write_bytes(pickle.dumps({}))
+    files = cal.scenario_files(tmp_path)
+    assert [f.name for f in files] == ["sd_waymo_a.pkl", "sd_waymo_b.pkl"]
+    points = {k: np.stack([np.linspace(0, 150, K), np.zeros(K)], -1) for k in ("VEHICLE", "PEDESTRIAN", "CYCLIST")}
+    log_scores, targets, used = cal.collect(INPUTS, fake_predictor, files, points, n=10, exclude={"cat-scene"})
+    assert used == 1 and log_scores.shape == (2, K)
+    # vehicle 1 drives 8 m/s for 8 s: its last position is ~64 m ahead, nearest the point at 64 m
+    assert targets[0] == cal.nearest_intention(points["VEHICLE"], np.array([64.0, 0.0]))
+    ids = cal.excluded_ids()
+    assert len(ids) == 497 and "9410e72c551f0aec" in ids  # scene 0

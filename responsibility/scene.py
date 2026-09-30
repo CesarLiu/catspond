@@ -122,6 +122,19 @@ class Scene:
             dynamic_map_states=sd["dynamic_map_states"],
         )
 
+    def drop(self, agents: Sequence[int]) -> "Scene":
+        """A copy without ``agents`` (their tracks deleted; indices shift)."""
+        drop = set(int(a) for a in agents)
+        if self.sdc in drop:
+            raise ValueError("the self-driving car cannot be dropped")
+        keep = [i for i in range(self.n_agents) if i not in drop]
+        new = {old: j for j, old in enumerate(keep)}
+        arrays = {k: getattr(self, k)[keep] for k in
+                  ("position", "heading", "velocity", "length", "width", "height", "valid")}
+        return replace(self, track_ids=[self.track_ids[i] for i in keep], types=[self.types[i] for i in keep],
+                       sdc=new[self.sdc], objects_of_interest=[new[i] for i in self.objects_of_interest if i in new],
+                       **arrays)
+
     def to_description(self, dt: float = 0.1, dataset: str = "waymo") -> Dict:
         """The scene as a ScenarioNet / MetaDrive scenario description again
         (what ``from_description`` reads), e.g. for UniTraj; works for scenes
