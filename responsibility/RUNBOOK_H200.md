@@ -309,6 +309,7 @@ python -m scripts.responsibility.summarize_blame --logs logs/blame/*.csv --out l
 | 闭环攻击成功率 ⚠ | 8a | `logs/advgen/closed_*.log` |
 | RL 训练对比 ⚠ | 8b–8d | `logs/*_MDWaymo-seed*/logger.csv` 和曲线、`logs/blame/summary.md` |
 | 策略的双向风格评测与交叉评测 ⚠ | 10 | `rollouts/`、`logs/responsibility/policies/compare/comparison.md`、`comparison_seeds.md` |
+| UniTraj MTR 训练与模型对照 ⚠ | 11 | 检查点和校准文件、`logs/responsibility/model_comparison/*/model_comparison.md` |
 
 ## 10. ⚠ 策略的双向驾驶风格评测（方向 3，M3.0–M3.4）
 
@@ -410,4 +411,183 @@ cat $P/compare/comparison.md
 
 ```bash
 tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts logs/blame
+```
+
+## 11. ⚠ UniTraj MTR：第二个预测模型（UNITRAJ_PLAN.md 的 U0、U2、U3、U5）
+
+目标：训练一个 Waymo 设定的 MTR（1.1 s 历史、8 s 未来、64 个意图点），用它重新计算责任，检查结论是否依赖预测模型。
+
+本地已完成并测试：
+- 数据接口：在真实场景上，历史和未来与日志的对齐误差小于 3e-6 m；
+- `--model mtr` 接入；
+- 校准、一致性检查和模型对照脚本的逻辑，用替身模型测试过。
+
+**本地无法验证、要在服务器上确认的：**
+- MTR 的 CUDA 算子能否编译；
+- 真实模型的输出。
+
+每一小步后面都写了检查方式，出错就停下来把日志发给我。
+
+**CAT 的 500 个场景来自 WOMD 的 `validation_interactive`**，所以：
+- **训练**只用 `training`，不会泄漏；
+- **校准**用 `validation`，脚本会按 `responsibility/unitraj_configs/cat_scenario_ids.txt` 自动排除这 500 个场景（其中有 3 个重复，实际 497 个 id）。
+
+### 11a. 环境（约 30 分钟）
+
+UniTraj 放在 cat 旁边（`../UniTraj`），或者设置环境变量 `UNITRAJ=/path/to/UniTraj`。
+
+```bash
+nvcc --version                     # 需要 CUDA 12.x 编译器；没有就先 module load 或 conda 装 cuda-nvcc=12.1
+bash scripts/responsibility/setup_unitraj_env.sh 2>&1 | tee logs/setup_unitraj.log
+```
+
+脚本建两个环境：
+- `~/venvs/unitraj39`：训练 MTR、用 MTR 计算责任；
+- `~/venvs/womd39`：把 WOMD 转成 ScenarioNet 格式。它依赖 TensorFlow 和 waymo-open-dataset，版本和训练环境冲突，所以单独建。
+
+日志最后应看到 `MTR ops and scenarionet import` 和 `conversion environment ready`。
+
+**GPU 冒烟测试**：用未训练的 MTR 跑一遍完整流程，在花时间转换数据、训练之前先确认环境没问题。
+
+```bash
+source ~/venvs/unitraj39/bin/activate
+python -m scripts.responsibility.verify_unitraj --checkpoint random --n 2
+```
+
+- `repeat`、`batch`、`nms`、"masked slot vs deleted track" 必须 PASS。
+- "近处 vs 远处车辆" 那一项在随机权重下可能 FAIL，属于正常。
+- 最后一行打印构造输入和预测的速度。
+
+### 11b. 下载和转换 WOMD
+
+需要先在 Waymo 官网接受许可，用 `gsutil` 下载 `waymo_open_dataset_motion_v_1_2_0/uncompressed/scenario/` 下的 `training/` 和 `validation/`。
+
+```bash
+source ~/venvs/womd39/bin/activate
+W=/data/womd/scenario          # tfrecord 所在目录
+S=/data/womd_sn                # ScenarioNet 输出目录
+# 先转换一小部分做试点（11c）：training 前 20 个分片，validation 前 5 个
+python -m scenarionet.convert_waymo -d $S/training   --raw_data_path $W/training   --num_workers 32 --start_file_index 0 --num_files 20
+python -m scenarionet.convert_waymo -d $S/validation --raw_data_path $W/validation --num_workers 32 --start_file_index 0 --num_files 5
+ls $S/training | head; du -sh $S/*
+```
+
+- 输出目录的最后一级名字必须是 `training` 和 `validation`，两者不同。UniTraj 用路径的最后两级给缓存命名，同名会冲突。
+- 转换报找不到 `waymo_open_dataset`，或版本不匹配：按 ScenarioNet 文档装它指定的 waymo-open-dataset 版本，再重跑。
+
+### 11c. 试点：量磁盘和速度
+
+**先试点，不要直接全量训练。** UniTraj 训练前会把所有样本预处理成不压缩的 h5 缓存。MTR 每个被预测的车约 1.8 MB（主要是 768 条地图折线），完整的 WOMD 训练集可能要若干 TB。
+
+```bash
+source ~/venvs/unitraj39/bin/activate
+python -m scripts.responsibility.train_unitraj --exp-name pilot \
+  --train-data /data/womd_sn/training --val-data /data/womd_sn/validation \
+  --cache-path /data/unitraj_cache --out-dir /data/unitraj_ckpt --devices 0 --epochs 1 --workers 16 \
+  2>&1 | tee logs/unitraj_pilot.log
+du -sh /data/unitraj_cache/*/*
+grep -E "Loaded .* samples" logs/unitraj_pilot.log
+```
+
+- **磁盘：** 用"缓存大小 ÷ 样本数"得到每个样本占多少，乘以全量样本数，估算全量缓存大小。20 个分片大约是训练集的 2%，所以全量约为试点的 50 倍。
+- **速度：** 看进度条的 it/s，乘以 batch size 256，得到每秒样本数，再估算每个 epoch 的时间。
+- **磁盘不够时的办法：**
+  - 只转换一部分分片，例如 `--num_files 300`，约 30% 的数据；
+  - 用 `--max-data-num` 限制训练样本数。注意它在缓存建好之后才生效，不能省磁盘；
+  - 在 `unitraj_configs/method/MTR_womd.yaml` 里把 `max_num_roads` 从 768 降到 384，每个样本约减半。这会偏离 MTR 原设定，要在报告里说明。
+
+试点结果（每样本大小、每秒样本数、估算的全量时间）先发给我，再定全量方案。
+
+### 11d. 正式训练（几天）
+
+按 11c 的结论转换剩下的分片（`--start_file_index 20 --num_files N`，写到同一个 `$S/training`），然后：
+
+```bash
+source ~/venvs/unitraj39/bin/activate
+nohup python -m scripts.responsibility.train_unitraj --exp-name mtr_womd \
+  --train-data /data/womd_sn/training --val-data /data/womd_sn/validation \
+  --cache-path /data/unitraj_cache --out-dir /data/unitraj_ckpt --devices 0 1 2 3 --workers 16 \
+  > logs/unitraj_train.log 2>&1 &
+tail -f logs/unitraj_train.log
+```
+
+- 多卡时，第一张卡的进程先建缓存，然后才启动训练。
+- 中断后续训：加 `--resume /data/unitraj_ckpt/mtr_womd/last.ckpt`。
+- 训练曲线：`/data/unitraj_ckpt/mtr_womd/logs/`（CSV）；加 `--wandb` 则记到 Weights & Biases。
+- 最好的检查点按验证集的 `val/brier_fde` 保存，文件名形如 `epoch12-brier_fde1.84.ckpt`。下文用 `CKPT=$(ls /data/unitraj_ckpt/mtr_womd/epoch*.ckpt)` 表示。
+- **验收：** 验证集的 minADE / minFDE 与 MTR 论文在 WOMD 上的数字（约 0.60 / 1.22 m）相差不超过 10%。UniTraj 的指标名和官方评测略有不同，看 `val/minADE6`、`val/minFDE6`。
+
+### 11e. 校准和一致性检查（U3，约 1 小时）
+
+```bash
+source ~/venvs/unitraj39/bin/activate
+CKPT=$(ls /data/unitraj_ckpt/mtr_womd/epoch*.ckpt)
+python -m scripts.responsibility.calibrate_unitraj --checkpoint $CKPT --scenes /data/womd_sn/validation --n 3000
+python -m scripts.responsibility.verify_unitraj --checkpoint $CKPT --n 5 2>&1 | tee logs/verify_unitraj.log
+```
+
+- **校准**打印温度缩放前后的四个指标：目标意图的 NLL、目标意图的平均概率、top-1 准确率、ECE。结果写到 `$CKPT.calibration.json`，之后计算责任时自动使用这个温度。
+  - T > 1 说明原始分数过于自信，T < 1 说明过于保守。
+  - 缩放后 ECE 应明显下降。
+- **一致性检查**必须 `ALL CHECKS PASSED`。
+  - 如果只有"batch"或"masked vs deleted"失败，看打印的差值大小：小于 1e-3 通常是 GPU 浮点误差，把日志发给我判断。
+
+### 11f. 用 MTR 计算责任（U5，与第 3 步同规模）
+
+```bash
+source ~/venvs/unitraj39/bin/activate
+# 采样 40 条（与 DenseTNT 相同的做法）
+OUT=logs/responsibility_mtr MODEL=mtr CHECKPOINT=$CKPT RECORDS=1 bash scripts/responsibility/run_h200.sh
+# 用全部 64 个意图、按概率加权的精确 CVaR
+OUT=logs/responsibility_mtr_w MODEL=mtr CHECKPOINT=$CKPT EXTRA="--motion-set weighted" AGENTS=sdc \
+  bash scripts/responsibility/run_h200.sh
+```
+
+MTR 跑得比 DenseTNT 快：一个窗口里的所有输入一次前向算完。但构造输入仍在 CPU 上，`SHARDS` 仍然按 CPU 核数设。
+
+### 11g. 模型对照：结论是否依赖预测模型
+
+```bash
+C=logs/responsibility/model_comparison
+python -m scripts.responsibility.compare_models --runs logs/responsibility/sdc logs/responsibility_mtr/sdc --out-dir $C/sdc
+python -m scripts.responsibility.compare_models --runs logs/responsibility/adv logs/responsibility_mtr/adv --out-dir $C/adv
+python -m scripts.responsibility.compare_models --runs logs/responsibility_mtr/sdc logs/responsibility_mtr_w/sdc \
+  --labels mtr-sampled mtr-weighted --out-dir $C/sampled_vs_weighted
+python -m scripts.responsibility.fit_levels --runs logs/responsibility_mtr/sdc logs/responsibility_mtr/adv \
+  --out-dir logs/responsibility_mtr/levels
+cat $C/*/model_comparison.md
+```
+
+要看的：
+- 逐窗口 β_s、β_c 的 Spearman 相关；
+- 激进和胆怯标记的 Cohen's κ；
+- 场景判定的一致率；
+- 两个模型的 HMM 等级结构是否相似。
+
+`sampled_vs_weighted` 显示采样噪声有多大，用来决定 MTR 默认用哪种做法。
+
+**策略评测也用 MTR 算一遍**（需要第 10 步的 rollout）：
+
+```bash
+P=logs/responsibility/policies; PM=logs/responsibility/policies_mtr
+for dir in rollouts/*/*/; do
+  run=$PM/$(basename $(dirname $dir))/$(basename $dir)
+  for i in $(seq 0 3); do
+    nohup python -m scripts.responsibility.compute_responsibility --rollouts $dir --out-dir $run \
+      --model mtr --checkpoint $CKPT --num-shards 4 --shard-index $i --device cuda > /dev/null 2>&1 &
+  done
+done; wait
+runs=$(ls -d $PM/replay/none $PM/replay/cat $PM/replay/fair* $PM/td3_*/none $PM/td3_*/cat $PM/td3_*/fair*)
+python -m scripts.responsibility.compare_policies --runs $runs --out-dir $PM/compare
+python -m scripts.responsibility.compare_models --runs $P/replay/none $PM/replay/none \
+  --policy-tables $P/compare/comparison.csv $PM/compare/comparison.csv --out-dir $C/policies
+```
+
+**论文里最关键的一句话**来自最后那张表：两个模型下，策略的排序和"是否比参照更激进/更胆怯"是否一致。
+
+打包带回：
+
+```bash
+tar czf unitraj_$(date +%m%d).tgz $C logs/responsibility_mtr/levels logs/verify_unitraj.log logs/unitraj_pilot.log \
+  $CKPT.calibration.json /data/unitraj_ckpt/mtr_womd/logs
 ```
