@@ -44,7 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np  # noqa: E402
 
-from responsibility.rollouts import end_reason, make_rollout, save_rollout  # noqa: E402
+from responsibility.recording import Recorder, SceneIndex, current_scenario_id  # noqa: E402,F401
+from responsibility.rollouts import save_rollout  # noqa: E402
 
 VEHICLE_CONFIG = dict(lidar=dict(num_lasers=30, distance=50, num_others=3),
                       side_detector=dict(num_lasers=30), lane_line_detector=dict(num_lasers=12))
@@ -99,68 +100,6 @@ def adv_mode_name(args) -> str:
     return selection_name(args)
 
 
-class Recorder:
-    """The ego's (and the adversary's) state and which logged objects exist,
-    at every step of an episode."""
-
-    def __init__(self, env, adversary=None):
-        self.env = env
-        self.adversary = None if adversary is None else str(adversary)
-        self.ego, self.adv, self.present = [], [], []
-
-    def record(self):
-        ego = self.env.vehicle
-        self.ego.append((*ego.position[:2], ego.heading_theta, *ego.velocity[:2]))
-        tm = self.env.engine.traffic_manager
-        ids = {str(k): v for k, v in tm._scenario_id_to_obj_id.items()}
-        self.present.append(set(ids))
-        if self.adversary is not None:
-            obj = self._object(ids.get(self.adversary))
-            self.adv.append((*obj.position[:2], obj.heading_theta, *obj.velocity[:2]) if obj is not None
-                            else (np.nan,) * 5)
-
-    def _object(self, obj_id):
-        if obj_id is None:
-            return None
-        return self.env.engine.get_objects([obj_id]).get(obj_id)
-
-    def nearest(self):
-        """Scenario id of the logged object closest to the ego now."""
-        tm = self.env.engine.traffic_manager
-        ego = np.asarray(self.env.vehicle.position[:2])
-        best, best_d = None, np.inf
-        for sid, obj_id in tm._scenario_id_to_obj_id.items():
-            obj = self._object(obj_id)
-            if obj is None:
-                continue
-            d = np.linalg.norm(np.asarray(obj.position[:2]) - ego)
-            if d < best_d:
-                best, best_d = str(sid), d
-        return best
-
-    @staticmethod
-    def _track(rows):
-        a = np.asarray(rows, dtype=np.float64)
-        return {"position": a[:, :2], "heading": a[:, 2], "velocity": a[:, 3:5]}
-
-    def rollout(self, scene_file, scenario_id, policy, adv_mode, info, planned=None):
-        crash = bool(info.get("crash_vehicle"))
-        ids = sorted(set().union(*self.present))
-        mask = np.array([[sid in step for step in self.present] for sid in ids], dtype=bool).reshape(len(ids), -1)
-        ego = self._track(self.ego)
-        size = self.env.vehicle
-        ego["size"] = (float(size.top_down_length), float(size.top_down_width))
-        adversary = None
-        if self.adversary is not None:
-            adversary = dict(self._track(self.adv), track_id=self.adversary, planned=planned)
-        end = {"step": len(self.ego) - 1, "reason": end_reason(info, crash),
-               "route_completion": float(info.get("route_completion", np.nan)), "crash_vehicle": crash,
-               "crash_object": bool(info.get("crash_object")), "out_of_road": bool(info.get("out_of_road")),
-               "arrive_dest": bool(info.get("arrive_dest")), "crash_with": self.nearest() if crash else None}
-        return make_rollout(scene_file, scenario_id, policy, adv_mode, ego=ego, end=end, adversary=adversary,
-                            present={"track_ids": ids, "mask": mask}, no_static_vehicles=True)
-
-
 def play(env, state, act, recorder, generator=None, max_steps=0):
     """One episode from the reset that returned ``state``; returns the last
     step's info."""
@@ -207,30 +146,6 @@ def adversary_check(env, rollout):
         s = s[np.isfinite(pos[s]).all(-1)]
         lag.append(float(np.mean(np.linalg.norm(pos[s] - plan[s - d, :2], axis=-1))) if s.size else float("nan"))
     return moved, lag[0], lag[1]
-
-
-class SceneIndex:
-    """MetaDrive scenario index -> scene file stem, verified by scenario id."""
-
-    def __init__(self, scenes):
-        self.scenes = Path(scenes)
-        self.by_id = None
-
-    @staticmethod
-    def _id(path):
-        from responsibility.scene import Scene
-
-        return Scene.load(path).scenario_id
-
-    def stem(self, index, scenario_id):
-        guess = self.scenes / f"{index}.pkl"
-        if guess.exists() and self._id(guess) == scenario_id:
-            return guess.stem
-        if self.by_id is None:
-            from responsibility.scene import scene_files
-
-            self.by_id = {self._id(p): p.stem for p in scene_files(self.scenes)}
-        return self.by_id[scenario_id]
 
 
 def write_config(directory, settings):
@@ -287,8 +202,7 @@ def main():
     for k, seed in enumerate(seeds, 1):
         t0 = time.time()
         state = env.reset(force_seed=seed)
-        scenario_id = str(env.engine.data_manager.current_scenario["metadata"].get(
-            "scenario_id", env.engine.data_manager.current_scenario.get("id")))
+        scenario_id = current_scenario_id(env)
         stem = stems.setdefault(seed, index.stem(seed, scenario_id))
         if all((root / m / f"{stem}.pkl").exists() for m in modes):
             print(f"[{k}/{len(seeds)}] scene {stem}: done", flush=True)

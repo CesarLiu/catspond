@@ -99,6 +99,7 @@
 **目标：** RL 训练中只按自车应负的责任比例惩罚碰撞，去掉"无法避免的碰撞"带来的错误学习信号。
 
 ### M2.1 碰撞归因函数：`responsibility/blame.py`（1–2 天，可离线开发）
+> **状态：** 已完成。规则基线 `rear_end_rule`（追尾归后车）：两车朝向相差 < 30°，且对方位于自车的前方或后方（按两车半尺寸归一化后，纵向偏移大于横向偏移），才判定为追尾；其余情形不给判定。每条归因都带上规则的判定（`crashes.csv` 的 `rule` 列），`compare_policies` 输出两者都给出判定时的一致率（`rule agree`）和规则的覆盖率。真实碰撞上的一致率待 M3.4 的 rollout 结果。
 - `crash_blame(model, scene, ego, crash_step, other=None)`：
   - 碰撞对象默认取碰撞时刻距离自车最近的车，有对手时取对手；
   - 取窗口 k = crash_step − 20（不足时取能取到的最早窗口，至少为第 10 步）；
@@ -107,6 +108,12 @@
 - **验收：** 合成场景的单元测试：自车被追尾时 w 接近 0，自车切入他车道时 w 接近 1；再在方向 3 基线评测的真实碰撞上，与简单规则（追尾归后车）比较一致率。
 
 ### M2.2 🖥 训练集成：`cat_RLtrain.py --blame_weighting {none, share}`（2 天）
+> **状态：** 代码已完成（`responsibility/blame_reward.py`），用模拟训练环境的单元测试验证（`test_blame_reward.py`）；待在服务器上实跑。与计划有三处不同，都源于 CAT 训练环境的实际设置：
+> 1. 训练配置没有 `crash_vehicle_done`，碰撞**不会结束回合**。车辆接触期间的每一步，MetaDrive 都把奖励替换为 −`crash_vehicle_penalty`（默认 1）。所以加权的对象不是"终止 transition"，而是每次碰撞事件（与同一辆车连续接触的若干步）中所有被罚的步；每个事件在其第一步归因一次。
+> 2. 被罚步的奖励改为 w·(−P) + (1−w)·step_reward，而不是计划中的 r_T + (1−w)·P = −w·P。区别在于 w = 0 时，这一步保留被罚款替换掉的驾驶奖励（`info["step_reward"]`），等于"没有发生碰撞"。
+> 3. 风险缓解直接作为默认：只有判定为 `ego`/`other`（两侧差异 > `--blame_margin`，默认 0.1 m）时才用 w，否则 w = 1（保留全部惩罚）。因此 M2.1 中"两者都 ≤ 0 时 w = 0.5"在训练里不会用到。
+>
+> 实验名加后缀 `_share`（如 `cat_share`、`cat_fair1_0.3_share`），归因日志写到 `logs/blame/<名字>_s<seed>.csv`。
 - 一个回合的 transition 先暂存。回合结束时如果是碰撞，从 rollout 重建场景（复用 M3.2），算出 w，把终止 transition 的奖励改为 r_T + (1 − w) · crash_penalty，也就是只保留 w 比例的碰撞惩罚（`crash_penalty` 取 MetaDrive 配置里的 `crash_vehicle_penalty`），然后整批写入 replay buffer。
 - 每个碰撞回合只算一次（GPU 上约 1–2 s），不影响非碰撞回合，训练开销小。
 - 记录每个碰撞回合的 w，便于分析训练过程中归因的分布。

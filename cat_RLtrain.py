@@ -7,6 +7,7 @@ import os
 from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
 from advgen.adv_generator import AdvGenerator  # noqa: F401
 from responsibility.adversarial import make_adv_generator, selection_name
+from responsibility.blame import MARGIN
 
 from saferl_algo import TD3,utils
 from saferl_plotter.logger import SafeLogger
@@ -82,13 +83,24 @@ if __name__ == "__main__":
 	parser.add_argument('--mode', choices=['replay','cat'],\
 						 help='Choose a mode (replay, cat)', default='cat')
 
-	adv_generator = make_adv_generator(parser)  # --adv_selection cat|constrained|penalized
+	# responsibility-weighted collision penalty (responsibility/blame_reward.py)
+	parser.add_argument('--blame_weighting', choices=['none','share'], default='none',
+						help="share: the ego keeps only its share of each collision's penalty")
+	parser.add_argument('--blame_margin', type=float, default=MARGIN,
+						help='m; the share is used only when the two sides differ by more (else the full penalty)')
+	parser.add_argument('--blame_device', default=None, help='DenseTNT device for the attribution (default: cuda if available)')
+
+	adv_generator = make_adv_generator(parser)  # --adv_selection cat|constrained|penalized|fair
 	args = parser.parse_args()
 
 	
 	file_name = args.mode
 	if args.mode == 'cat' and args.adv_selection != 'cat':  # responsibility-constrained adversary
 		file_name += "_" + selection_name(args)  # e.g. cat_constrained1, cat_fair1_0.3
+	if args.blame_weighting != 'none':
+		file_name += "_" + args.blame_weighting  # e.g. cat_share, cat_fair1_0.3_share
+		if args.blame_margin != MARGIN:
+			file_name += f"{args.blame_margin:g}"
 	model_name = f"{file_name}_s{args.seed}"  # per seed: runs with several seeds must not share one model file
 	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
 						fieldnames=['route_completion_normal','crash_rate_normal','route_completion_adv','crash_rate_adv'])
@@ -157,10 +169,22 @@ if __name__ == "__main__":
 		policy.load(f"./models/{policy_file}")
 
 	replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
-	
+
+	weighting = None  # --blame_weighting share: transitions pass through it, collision penalties weighted
+	if args.blame_weighting != 'none':
+		from responsibility.blame_reward import BlameWeighting
+
+		dtnt = getattr(adv_generator, "dtnt", None)  # the responsibility-constrained generators load one
+		if dtnt is None:
+			from responsibility.densetnt import DenseTNT
+			dtnt = DenseTNT(device=args.blame_device or ("cuda" if torch.cuda.is_available() else "cpu"))
+		weighting = BlameWeighting(dtnt, config_train["data_directory"], env.config["crash_vehicle_penalty"],
+								   margin=args.blame_margin, log_path=f"./logs/blame/{model_name}.csv")
 
 	state, done = env.reset(), False
 	adv_generator.before_episode(env)
+	if weighting is not None:
+		weighting.begin(env, adv_generator.adv_agent)
 	episode_reward = 0
 	episode_cost = 0
 	episode_timesteps = 0
@@ -192,8 +216,11 @@ if __name__ == "__main__":
 		# 	print('!!!!!!!!!!!!!Step Bug!!!!!!!!!!!!!!')
 		done_bool = float(done)
 
-		# Store data in replay buffer
-		replay_buffer.add(state, action, next_state, reward, done_bool)
+		# Store data in replay buffer (with --blame_weighting, once the episode is over)
+		if weighting is None:
+			replay_buffer.add(state, action, next_state, reward, done_bool)
+		else:
+			weighting.add(state, action, next_state, reward, done_bool, info)
 
 		state = next_state
 		episode_reward += reward
@@ -204,6 +231,9 @@ if __name__ == "__main__":
 			policy.train(replay_buffer, args.batch_size)
 
 		if done:
+			if weighting is not None:
+				for transition in weighting.end(total_steps=t + 1):
+					replay_buffer.add(*transition)
 			adv_generator.after_episode(update_AV_traj= args.mode=='cat')
 
 			print('#'*20)
@@ -222,6 +252,7 @@ if __name__ == "__main__":
 				env = WaymoEnv(config=config_train)
 
 				if args.save_model: policy.save(f"./models/{model_name}")
+				if weighting is not None: print(weighting.summary())
 			
 			# Reset environment
 			state, done = env.reset(), False
@@ -239,6 +270,8 @@ if __name__ == "__main__":
 				print('NORMAL')
 
 			env.engine.traffic_manager.set_adv_info(adv_generator.adv_agent,adv_generator.adv_traj)	
+			if weighting is not None:
+				weighting.begin(env, adv_generator.adv_agent)
 			episode_reward = 0
 			episode_cost = 0
 			episode_timesteps = 0

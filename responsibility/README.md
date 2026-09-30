@@ -329,6 +329,12 @@ positive part exceeds the other's by more than 0.1 m, the other's in the
 reverse case, and shared otherwise; the ego's share is
 w = β_ego⁺ / (β_ego⁺ + β_other⁺).
 
+As a baseline, every attribution also carries the verdict of the **rear-end
+rule**, the traffic-law reading of the most common collision: the follower
+is at fault. It applies when both travel the same way (headings within 30°)
+and the other lies off the ego's front or back rather than its side, and
+says nothing otherwise (`crashes.csv`, column `rule`).
+
 ```bash
 python -m scripts.responsibility.fit_levels --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
     --fit-runs P/replay/none --out-dir P/levels            # P=logs/responsibility/policies
@@ -341,7 +347,9 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 `--reference`), the replayed log. Columns:
 
 - from the rollouts: crash rate, route completion, arrival and out-of-road rates;
-- the ego-fault and other-fault shares of the attributed collisions;
+- the ego-fault and other-fault shares of the attributed collisions, and
+  their agreement with the rear-end rule where both decide (with the rule's
+  coverage in `comparison.csv`);
 - the share of windows the ego was stopped (below `--min-speed`, not judged);
 - the aggressive and timid shares of the judged windows, and each relative
   to the reference ("× ref");
@@ -349,6 +357,46 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 - with `--hmm`, the share of windows in each responsibility level.
 
 `comparison.png` shows β_s per run and the level (or aggressive/timid) shares.
+
+### Training with a responsibility-weighted collision penalty
+
+In CAT's training environment a collision does not end the episode: at every
+step the ego touches another vehicle, MetaDrive replaces that step's driving
+reward with −`crash_vehicle_penalty` (1). An adversary that drives into the
+ego costs it the same as a collision the ego caused, which teaches it to
+avoid driving on rather than to drive well. With `--blame_weighting share`,
+`cat_RLtrain.py` keeps only the ego's share of each penalty
+(`responsibility/blame_reward.py`):
+
+- a **collision** is a run of consecutive steps in contact with the same
+  vehicle, attributed once at its first step, in the scene rebuilt from the
+  training episode up to then (the same attribution as above);
+- the **weight** is the ego's share w when the verdict is "ego" or "other".
+  Otherwise the full penalty is kept (w = 1): when the sides differ by less
+  than `--blame_margin` (0.1 m), after the end of the log, when the partner
+  is not a predicted vehicle, or when the attribution fails. Doubt keeps the
+  penalty, so noise in the attribution does not become noise in the reward;
+- at every penalised step of the collision the reward becomes
+  w · (−penalty) + (1 − w) · (the driving reward the penalty replaced). w = 1
+  is MetaDrive's reward, w = 0 the step as if nothing had been hit.
+
+An episode's transitions go into the replay buffer when it ends, already
+weighted. Every attributed collision is logged to
+`logs/blame/<run>_s<seed>.csv` (β of both sides, verdict, rule, weight, time),
+and the running mean weight is printed at every evaluation. It works with any
+adversary (`--mode replay` too). Runs are named with a `_share` suffix
+(`cat_share`, `cat_fair1_0.3_share`). An attribution costs two DenseTNT
+passes, once per collision; the constrained and fair generators share
+their DenseTNT with it.
+
+```bash
+python cat_RLtrain.py --mode cat --blame_weighting share --seed 0 --save_model          # cat_share_s0
+python cat_RLtrain.py --mode cat --adv_selection fair --resp_threshold 1 --resp_avoid 0.3     --blame_weighting share --seed 0 --save_model                                         # cat_fair1_0.3_share_s0
+```
+
+The weighting is tested against a stand-in for the training env
+(`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of
+the penalty; doubt and failed attributions keep all of it).
 
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 
