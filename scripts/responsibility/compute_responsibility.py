@@ -25,7 +25,10 @@ rollout in DIR (collect_rollouts.py) is played back into its scene -- the
 simulated ego (and adversary) in place of the logged ones, objects the
 simulator did not spawn removed (responsibility/rollouts.py) -- and the ego
 is queried there. Windows stop where the episode did: at a collision, or a
-full metric horizon before any other end.
+full metric horizon before any other end. Every collision with another road
+user is also attributed (responsibility/blame.py: the ego's and the other's
+safety responsibility toward each other in the 2 s before it) and written
+to OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
 
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
@@ -49,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
+from responsibility.blame import crash_blame  # noqa: E402
 from responsibility.densetnt import DenseTNT  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
@@ -64,6 +68,30 @@ from responsibility.scene import Scene, scene_files  # noqa: E402
 
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
               "n_neighbours", "safety_against", "courtesy_toward"]
+CRASH_FIELDS = ["scene", "policy", "adv_mode", "crash_step", "window", "other_id", "other_type", "adversary",
+                "beta_ego", "beta_other", "share", "verdict"]
+
+
+def _m(value):
+    return "n/a" if value is None else f"{value:+.2f} m"
+
+
+def blame_row(model, scene, agent, rollout, cfg):
+    """The attribution of the rollout's vehicle collision (verdict "unknown"
+    when there is no window before it with both sides present)."""
+    step = rollout["end"]["step"]
+    adversary = rollout["adversary"]["track_id"] if rollout["adversary"] is not None else ""
+    row = {"scene": rollout["scene_file"], "policy": rollout["policy"], "adv_mode": rollout["adv_mode"],
+           "crash_step": step, "adversary": adversary, "verdict": "unknown"}
+    if step >= scene.n_steps:  # after the log: nothing logged left to collide with
+        return row
+    with_id = rollout["end"].get("crash_with")
+    other = scene.index(with_id) if with_id is not None and str(with_id) in scene.track_ids else None
+    blame = crash_blame(model, scene, agent, step, other, cfg)
+    if blame is not None:
+        row.update({k: v for k, v in blame.as_row().items() if k in CRASH_FIELDS})
+    row["adversary"] = int(bool(adversary) and row.get("other_id") == adversary)
+    return row
 
 
 def parse_args():
@@ -145,8 +173,9 @@ def main():
         return
 
     model = DenseTNT(device=args.device)
-    rows_path = out / ("windows.csv" if args.num_shards == 1
-                       else f"windows.shard-{args.shard_index}-of-{args.num_shards}.csv")
+    suffix = ".csv" if args.num_shards == 1 else f".shard-{args.shard_index}-of-{args.num_shards}.csv"
+    rows_path = out / f"windows{suffix}"
+    crashes_path = out / f"crashes{suffix}"
     new_file = not rows_path.exists()
     with open(rows_path, "a", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=ROW_FIELDS)
@@ -175,6 +204,16 @@ def main():
                     save_record(record, out / "records" / f"{path.stem}.pkl")
                 else:
                     observations = scene_responsibility(model, scene, agent, cfg, last_step)
+                if rollout is not None and rollout["end"]["reason"] == "crash_vehicle" and agent == scene.sdc:
+                    row = blame_row(model, scene, agent, rollout, cfg)
+                    new_crashes = not crashes_path.exists()
+                    with open(crashes_path, "a", newline="") as f:
+                        crash_writer = csv.DictWriter(f, fieldnames=CRASH_FIELDS)
+                        if new_crashes:
+                            crash_writer.writeheader()
+                        crash_writer.writerow(row)
+                    print(f"  collision at step {row['crash_step']} with {row.get('other_id', '?')}: {row['verdict']} "
+                          f"(beta ego {_m(row.get('beta_ego'))}, other {_m(row.get('beta_other'))})", flush=True)
             for obs in observations:
                 writer.writerow({"scene": path.stem, **obs.as_row()})
             handle.flush()

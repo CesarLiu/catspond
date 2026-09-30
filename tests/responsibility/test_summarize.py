@@ -44,3 +44,26 @@ def test_scenes_are_flagged_by_threshold(tmp_path, monkeypatch, capsys):
     assert verdict == {"0": (0, 0, 0), "1": (1, 1, 0), "2": (1, 0, 1)}
     assert (run / "summary" / "responsibility.png").exists()
     assert "aggressive scenes: 2/3" in capsys.readouterr().out
+
+
+def test_timid_threshold_is_a_low_quantile_of_the_negative_values():
+    values = [0.0] * 50 + [0.5] + [-0.2, -0.4, -0.6, -0.8, -1.0]
+    assert summ.calibrate_timid(values, 0.5, floor=0.1) == pytest.approx(-0.6)
+    assert summ.calibrate_timid([0.0, -0.01], 0.1, floor=0.1) == -0.1
+    assert summ.calibrate_timid([0.0, 0.3], 0.1, floor=0.05) == -0.05
+
+
+def test_scenes_are_flagged_timid(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    _write(run, [
+        ("0", 10, 5.0, -0.05, 0.001),  # as cautious as usual
+        ("1", 10, 5.0, -2.00, 0.001), ("1", 20, 5.0, -1.5, 0.0),  # kept far more margin
+        ("2", 10, 5.0, 0.90, 0.001),  # aggressive, not timid
+    ])
+    monkeypatch.setattr(sys, "argv", ["x", "--run", str(run), "--safety-threshold", "0.5",
+                                      "--courtesy-threshold", "0.1", "--timid-threshold", "-1.0"])
+    summ.main()
+    with open(run / "summary" / "scenes.csv") as f:
+        verdict = {r["scene"]: (int(r["timid"]), int(r["timid_flagged"]), int(r["aggressive"]))
+                   for r in csv.DictReader(f)}
+    assert verdict == {"0": (0, 0, 0), "1": (1, 2, 0), "2": (0, 0, 1)}

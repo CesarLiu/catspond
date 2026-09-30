@@ -265,6 +265,50 @@ safety moves by 0.4 m on average), so compare a policy against **the
 replayed log** (`--policy replay` rollouts), not against the plain logged
 run: that is the logged driving in the scene the policy actually saw.
 
+### Comparing policies: aggressive and timid, and whose fault the collisions were
+
+Responsibility has two directions. β_s > 0 is aggressive: the agent kept
+less margin than its own alternatives. β_s < 0 is the opposite: it kept more
+margin to everyone than its alternatives would have. A little of that is
+ordinary caution; far more than logged drivers ever keep is **timid**, the
+failure mode of a policy trained to avoid collisions at any cost.
+`summarize_responsibility` now flags both: aggressive above the
+`--quantile` (0.9) of the reference's positive values, timid below the
+`--timid-quantile` (0.1) of its negative safety values.
+
+Every vehicle collision of a rollout is also **attributed**
+(`responsibility/blame.py`, written to `crashes.csv` by
+`compute_responsibility --rollouts`). In the 2 s window that ends with the
+collision it measures both sides: β_ego, the ego's safety responsibility
+toward the other, and β_other, the other's toward the ego. Each comes from
+that agent's own DenseTNT motion set. A car that was rear-ended did what its
+alternatives do (β ≈ 0), while the follower closed in far more than its
+alternatives (β ≫ 0). The collision counts as the ego's fault when its
+positive part exceeds the other's by more than 0.1 m, the other's in the
+reverse case, and shared otherwise; the ego's share is
+w = β_ego⁺ / (β_ego⁺ + β_other⁺).
+
+```bash
+python -m scripts.responsibility.fit_levels --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
+    --fit-runs P/replay/none --out-dir P/levels            # P=logs/responsibility/policies
+python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
+    --hmm P/levels/hmm.pkl --out-dir P/compare
+```
+
+`compare_policies` writes one row per run (policy × adversary mode) to
+`comparison.csv`/`.md`, with thresholds from the first run (or
+`--reference`), the replayed log. Columns:
+
+- from the rollouts: crash rate, route completion, arrival and out-of-road rates;
+- the ego-fault and other-fault shares of the attributed collisions;
+- the share of windows the ego was stopped (below `--min-speed`, not judged);
+- the aggressive and timid shares of the judged windows, and each relative
+  to the reference ("× ref");
+- the median β_s and the p90 of β_c;
+- with `--hmm`, the share of windows in each responsibility level.
+
+`comparison.png` shows β_s per run and the level (or aggressive/timid) shares.
+
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 
 The full sequence of experiments on the server, step by step, is in

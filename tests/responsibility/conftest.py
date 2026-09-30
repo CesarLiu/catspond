@@ -55,12 +55,14 @@ def make_scene(tracks, sdc="0", ooi=("0", "1")):
 
 class FakeModel:
     """Duck-typed stand-in for DenseTNT: ``samples(n)`` gives the queried
-    agent's motion set [n, 80, 2]; ``courtesy_logits[b]`` gives b's goal
+    agent's motion set [n, 80, 2] (``samples_by_agent[i](n)`` agent i's, if
+    given); ``courtesy_logits[b]`` gives b's goal
     logits (with, without the queried agent); agents not listed there are
     'not predicted' (as DenseTNT does for pedestrians)."""
 
-    def __init__(self, samples, courtesy_logits=None, predicted=None):
+    def __init__(self, samples, courtesy_logits=None, predicted=None, samples_by_agent=None):
         self.samples = samples
+        self.samples_by_agent = samples_by_agent or {}
         self.courtesy_logits = courtesy_logits or {}
         self.predicted = predicted
         self.calls = []
@@ -68,10 +70,10 @@ class FakeModel:
     def distribution(self, scene, step, agent, excluded=(), avoid_partner=()):
         if self.predicted is not None and agent not in self.predicted:
             return None
-        return SimpleNamespace(log_prob=torch.log_softmax(torch.zeros(4), -1))
+        return SimpleNamespace(log_prob=torch.log_softmax(torch.zeros(4), -1), agent=agent)
 
     def sample(self, dist, n, generator=None):
-        return None, None, self.samples(n)
+        return None, None, self.samples_by_agent.get(dist.agent, self.samples)(n)
 
     def with_and_without(self, scene, step, b, a):
         self.calls.append((step, b, a))
