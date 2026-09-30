@@ -8,8 +8,11 @@ DenseTNT motion model.
     beta_s(a)     = max_b beta_s(a, b)                              (Eq. 5)
 
 D_g is the closest approach over the metric horizon (saturated at d_sat),
-xi_a / xi_b the logged futures, and the motion set N trajectories DenseTNT
-samples for a from its goal distribution at k. beta_s > 0: most of what a
+xi_a / xi_b the logged futures, and the motion set N trajectories the motion
+model samples for a at k (DenseTNT: from its goal distribution) -- or, with
+``motion_set="weighted"`` and a model with a finite motion set (UniTraj's MTR:
+64 intentions), all of them weighted by their probabilities, which makes the
+CVaR exact. beta_s > 0: most of what a
 could have done would have kept more distance to b than what it actually
 did, so a gave up safety margin (drove more aggressively than its
 alternatives); beta_s <= 0: a kept at least as much distance as usual.
@@ -53,6 +56,7 @@ class ResponsibilityConfig:
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     courtesy: bool = True
     seed: int = 0
+    motion_set: str = "sampled"  # or "weighted": the model's whole motion set, probability-weighted
 
 
 @dataclass
@@ -94,10 +98,30 @@ def window_steps(scene: Scene, agent: int, cfg: ResponsibilityConfig, last_step:
     return [k for k in range(FIRST_STEP, last + 1, cfg.window_stride) if scene.valid[agent, k]]
 
 
+def weighted_cvar(values: torch.Tensor, weights: torch.Tensor, alpha: float) -> torch.Tensor:
+    """CVaR_alpha of a discrete distribution (values [..., K] with
+    probabilities weights [K]): the mean of its upper (1 - alpha) tail, the
+    boundary value counted with the fraction of its mass inside the tail --
+    risk.cvar's convention for a weighted, finite set."""
+    w = weights / weights.sum()
+    order = torch.argsort(values, dim=-1, descending=True)
+    v = torch.gather(values, -1, order)
+    w = w.expand_as(values).gather(-1, order)
+    tail = 1.0 - alpha
+    if tail <= 0:
+        return v[..., 0]
+    before = torch.cumsum(w, dim=-1) - w
+    inside = (tail - before).clamp(min=0.0)
+    inside = torch.minimum(inside, w)
+    return (inside * v).sum(-1) / tail
+
+
 def safety_responsibility(samples: np.ndarray, actual: np.ndarray, actual_valid: np.ndarray,
-                          neighbour: np.ndarray, neighbour_valid: np.ndarray, cfg: ResponsibilityConfig) -> float:
+                          neighbour: np.ndarray, neighbour_valid: np.ndarray, cfg: ResponsibilityConfig,
+                          weights: Optional[np.ndarray] = None) -> float:
     """beta_s(a, b), Eq. 3, over the first H steps: samples [N, H, 2] of a's
-    motion, a's logged [H, 2] and b's logged [H, 2] futures with validity."""
+    motion (probability ``weights`` [N] if it is a weighted motion set), a's
+    logged [H, 2] and b's logged [H, 2] futures with validity."""
     f = torch.float32
     s = torch.as_tensor(samples, dtype=f)
     a = torch.as_tensor(actual, dtype=f)
@@ -105,7 +129,23 @@ def safety_responsibility(samples: np.ndarray, actual: np.ndarray, actual_valid:
     vb = torch.as_tensor(neighbour_valid) & torch.as_tensor(actual_valid)  # compare where both are logged
     d_samples = pairwise_min_distance_over_time(s, b, valid_b=vb, d_sat=cfg.d_sat)
     d_actual = pairwise_min_distance_over_time(a.unsqueeze(0), b, valid_b=vb, d_sat=cfg.d_sat).squeeze(0)
+    if weights is not None:
+        return float(weighted_cvar(d_samples - d_actual, torch.as_tensor(weights, dtype=f), cfg.cvar_alpha))
     return float(cvar(d_samples - d_actual, cfg.cvar_alpha))
+
+
+def motion_set(model, dist, cfg: ResponsibilityConfig, generator: Optional[torch.Generator] = None):
+    """The agent's motion set: (trajectories [N, T, 2], their log
+    probabilities [N], weights [N] or None) -- N samples, or with
+    cfg.motion_set == "weighted" the model's whole, probability-weighted set."""
+    if cfg.motion_set == "weighted":
+        if not hasattr(model, "motion_set"):
+            raise ValueError("motion_set='weighted' needs a model with a finite motion set (e.g. UniTraj's MTR)")
+        trajs, probs = model.motion_set(dist)
+        probs = np.asarray(probs, dtype=np.float64)
+        return trajs, torch.as_tensor(np.log(np.clip(probs, 1e-300, None))), probs
+    _, log_prob, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
+    return trajs, log_prob, None
 
 
 def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor) -> float:
@@ -143,7 +183,7 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
         record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
                       neighbours=neighbours, courtesy={})
     if neighbours:
-        _, sample_log_prob, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
+        trajs, sample_log_prob, weights = motion_set(model, dist, cfg, generator)
         if record is not None:
             record["samples"], record["sample_log_prob"] = trajs, sample_log_prob
         samples = trajs[:, :horizon, :2]
@@ -151,7 +191,7 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
         for b, evidence in neighbours.items():
             entry = dict(evidence, type=scene.types[b])
             entry["safety"] = safety_responsibility(
-                samples, actual, actual_valid, scene.position[b, fut, :2], scene.valid[b, fut], cfg)
+                samples, actual, actual_valid, scene.position[b, fut, :2], scene.valid[b, fut], cfg, weights)
             entry["courtesy"] = None
             if cfg.courtesy:
                 pair = model.with_and_without(scene, step, b, agent)

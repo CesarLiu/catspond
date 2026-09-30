@@ -166,3 +166,15 @@ def test_rollout_scenes_build_inputs():
                                scene.position[0, 30, :2] + np.array([0.0, 1.0]), atol=1e-4)
     mask = inst.sample["center_gt_trajs_mask"].astype(bool)
     assert mask[:10].all() and not mask[10:].any()  # the episode ended at step 40
+
+
+def test_the_weighted_motion_set_runs_on_the_adapter():
+    scene = _scene()
+    sampled = scene_responsibility(_model(), scene, scene.sdc, ResponsibilityConfig(window_stride=20))
+    exact = scene_responsibility(_model(), scene, scene.sdc,
+                                 ResponsibilityConfig(window_stride=20, motion_set="weighted"))
+    assert [o.step for o in exact] == [o.step for o in sampled]
+    assert [o.courtesy for o in exact] == [o.courtesy for o in sampled]  # courtesy does not use the motion set
+    _, record = run_scene(_model(), scene, scene.sdc, ResponsibilityConfig(window_stride=20, motion_set="weighted"))
+    frame = next(f for f in record["frames"] if f["metric_samples"])
+    assert frame["samples"].shape == (K, 80, 2)

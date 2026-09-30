@@ -17,7 +17,7 @@ Each frame shows
 
 Two ways to run it:
 
-  live      --scene N: computes the frames with DenseTNT (the same code as
+  live      --scene N: computes the frames with DenseTNT, or --model mtr (the same code as
             compute_responsibility.py; --run takes a run's settings so the
             values equal its windows.csv) and saves them as record.pkl
   offline   --record path/to/<scene>.pkl: renders a record written by
@@ -86,6 +86,9 @@ def parse_args():
     live.add_argument("--horizon", type=int, default=d.metric_horizon)
     live.add_argument("--seed", type=int, default=d.seed)
     live.add_argument("--device", default=None, help="Default: cuda if available.")
+    from responsibility.models import add_model_arguments
+
+    add_model_arguments(p)  # --model densetnt|mtr --checkpoint ... (as for the run being shown)
     return p.parse_args()
 
 
@@ -114,7 +117,7 @@ def pick_agent(scene: Scene, which: str) -> int:
 def live_record(args):
     import torch
 
-    from responsibility.densetnt import DenseTNT
+    from responsibility.models import load_model
     from responsibility.records import run_scene
 
     path = {p.stem: p for p in scene_files(args.scenes)}[args.scene] if args.scene.isdigit() else Path(args.scene)
@@ -122,7 +125,7 @@ def live_record(args):
     agent = pick_agent(scene, args.agent)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     cfg = config_from(args)
-    observations, record = run_scene(DenseTNT(device=device), scene, agent, cfg)
+    observations, record = run_scene(load_model(args, device), scene, agent, cfg)
     record["scene_file"] = path.stem
     for obs in observations:
         print(f"t={obs.step / 10:.1f}s: safety {obs.safety:+.3f} m, courtesy {obs.courtesy:.4f} nats, "

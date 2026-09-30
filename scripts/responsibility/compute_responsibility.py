@@ -1,5 +1,6 @@
 """Safety and courtesy responsibility of the self-driving car (or any agent)
-over CAT's scenes, with DenseTNT as the motion model.
+over CAT's scenes, with DenseTNT (default) or UniTraj's MTR (--model mtr
+--checkpoint ...) as the motion model.
 
 For every scene and every context step k (10, 10 + stride, ..., up to 2 s
 before the end of the log) it writes one row to OUT/windows.csv:
@@ -54,7 +55,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from responsibility.blame import rollout_blame  # noqa: E402
-from responsibility.densetnt import DenseTNT  # noqa: E402
+from responsibility.models import add_model_arguments, load_model, model_settings  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
 from responsibility.records import run_scene, save_record  # noqa: E402
@@ -105,6 +106,8 @@ def parse_args():
     d = ResponsibilityConfig()
     p.add_argument("--n-samples", type=int, default=d.n_safety_samples)
     p.add_argument("--cvar-alpha", type=float, default=d.cvar_alpha)
+    p.add_argument("--motion-set", default=d.motion_set, choices=["sampled", "weighted"],
+                   help="weighted: the model's whole motion set, probability-weighted (mtr only).")
     p.add_argument("--d-sat", type=float, default=d.d_sat, help="<= 0 disables saturation.")
     p.add_argument("--horizon", type=int, default=d.metric_horizon, help="10 Hz steps scored.")
     p.add_argument("--stride", type=int, default=d.window_stride, help="Steps between context steps.")
@@ -120,7 +123,23 @@ def parse_args():
     p.add_argument("--ttc-threshold", type=float, default=i.ttc_threshold)
     p.add_argument("--seed", type=int, default=d.seed)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    add_model_arguments(p)
     return p.parse_args()
+
+
+# settings added after runs were made, with the value those runs used
+LATER_SETTINGS = {"model": {"name": "densetnt"}}
+LATER_RESPONSIBILITY = {"motion_set": "sampled"}
+
+
+def same_settings(stored, settings) -> bool:
+    """Whether a run's stored config.json matches the current settings,
+    reading settings it predates as their values at the time."""
+    stored = dict(stored)
+    for key, value in LATER_SETTINGS.items():
+        stored.setdefault(key, value)
+    stored["responsibility"] = {**LATER_RESPONSIBILITY, **stored.get("responsibility", {})}
+    return stored == json.loads(json.dumps(settings))
 
 
 def pick_agent(scene: Scene, which: str) -> int:
@@ -137,7 +156,7 @@ def pick_agent(scene: Scene, which: str) -> int:
 def main():
     args = parse_args()
     cfg = ResponsibilityConfig(
-        n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha,
+        n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha, motion_set=args.motion_set,
         d_sat=args.d_sat if args.d_sat > 0 else None, metric_horizon=args.horizon,
         window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed,
         interaction=InteractionConfig(max_neighbors=args.max_neighbors, gap_threshold=args.gap_threshold,
@@ -145,12 +164,13 @@ def main():
     )
     out = Path(args.out_dir)
     (out / "obs").mkdir(parents=True, exist_ok=True)
-    settings = {"responsibility": asdict(cfg), "agent": args.agent, "scenes": str(Path(args.scenes).resolve())}
+    settings = {"responsibility": asdict(cfg), "agent": args.agent, "scenes": str(Path(args.scenes).resolve()),
+                "model": model_settings(args)}
     if args.rollouts:
         settings["rollouts"] = str(Path(args.rollouts).resolve())
     config_path = out / "config.json"
     if config_path.exists():
-        if json.loads(config_path.read_text()) != json.loads(json.dumps(settings)):
+        if not same_settings(json.loads(config_path.read_text()), settings):
             raise SystemExit(f"{out} holds results computed with other settings; use a new --out-dir")
     else:  # shards may race here; they write the same content
         tmp = config_path.with_name(f"config.json.tmp{os.getpid()}")
@@ -169,7 +189,7 @@ def main():
     if not todo:
         return
 
-    model = DenseTNT(device=args.device)
+    model = load_model(args, args.device)
     suffix = ".csv" if args.num_shards == 1 else f".shard-{args.shard_index}-of-{args.num_shards}.csv"
     rows_path = out / f"windows{suffix}"
     crashes_path = out / f"crashes{suffix}"

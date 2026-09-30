@@ -17,8 +17,10 @@
 #   SAMPLES  DenseTNT samples per window (safety)      (40)
 #   RECORDS  1: also write per-scene records for offline
 #            inspection/visualisation (--save-records)  (0)
+#   MODEL    motion model: densetnt or mtr             (densetnt)
+#   CHECKPOINT  mtr: the trained MTR checkpoint         ("")
 #   EXTRA    further compute_responsibility.py flags    ("")
-#            e.g. EXTRA="--horizon 30 --d-sat 15"
+#            e.g. EXTRA="--horizon 30 --d-sat 15" or, with MODEL=mtr, EXTRA="--motion-set weighted"
 #
 # The work per window is mostly CPU (building DenseTNT's inputs) plus small GPU
 # passes, so many processes share a GPU; SHARDS x len(AGENTS) processes are
@@ -35,7 +37,11 @@ SHARDS=${SHARDS:-16}
 STRIDE=${STRIDE:-5}
 SAMPLES=${SAMPLES:-40}
 RECORDS=${RECORDS:-0}
+MODEL=${MODEL:-densetnt}
+CHECKPOINT=${CHECKPOINT:-}
 read -r -a EXTRA_ARGS <<< "${EXTRA:-}"
+EXTRA_ARGS+=(--model "$MODEL")
+[ -n "$CHECKPOINT" ] && EXTRA_ARGS+=(--checkpoint "$CHECKPOINT")
 [ "$RECORDS" = 1 ] && EXTRA_ARGS+=(--save-records)
 
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then

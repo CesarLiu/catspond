@@ -34,7 +34,7 @@ import numpy as np
 import torch
 
 from responsibility.interaction import InteractionConfig, interaction_scores
-from responsibility.metrics import FIRST_STEP, ResponsibilityConfig, effective_horizon, safety_responsibility
+from responsibility.metrics import FIRST_STEP, ResponsibilityConfig, effective_horizon, motion_set, safety_responsibility
 from responsibility.scene import Scene
 
 LOOKBACK = 20  # steps: the window ending with the collision (the metric horizon)
@@ -78,10 +78,10 @@ def pair_safety(model, scene: Scene, a: int, b: int, step: int, cfg: Responsibil
     dist = model.distribution(scene, step, a)
     if dist is None:
         return None
-    _, _, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
+    trajs, _, weights = motion_set(model, dist, cfg, generator)
     fut = slice(step + 1, step + 1 + horizon)
     return safety_responsibility(trajs[:, :horizon, :2], scene.position[a, fut, :2], scene.valid[a, fut],
-                                 scene.position[b, fut, :2], scene.valid[b, fut], cfg)
+                                 scene.position[b, fut, :2], scene.valid[b, fut], cfg, weights)
 
 
 def split(beta_ego: float, beta_other: Optional[float], margin: float = MARGIN):
