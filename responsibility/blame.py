@@ -19,6 +19,12 @@ than its alternatives (beta_other > 0); a car that cut in is the reverse.
              by more than ``margin`` metres, "shared" otherwise, "ego-only"
              when b is not predicted (DenseTNT predicts vehicles only) --
              then only beta_ego is known
+
+The rule baseline (``rear_end_rule``) is the traffic-law reading of the
+most common collision: in a rear-end collision the follower is at fault.
+It applies when both travel the same way (headings within 30 degrees) and
+they meet end to end rather than side by side, and says nothing otherwise.
+The counterfactual verdict is compared against it where both give one.
 """
 
 from dataclasses import asdict, dataclass
@@ -33,6 +39,7 @@ from responsibility.scene import Scene
 
 LOOKBACK = 20  # steps: the window ending with the collision (the metric horizon)
 MARGIN = 0.1  # m: smaller differences do not tell the sides apart
+REAR_END_HEADING = np.deg2rad(30.0)  # rad: "travelling the same way"
 
 
 @dataclass
@@ -46,6 +53,7 @@ class Blame:
     beta_other: Optional[float]
     share: Optional[float]
     verdict: str
+    rule: str = "n/a"  # rear_end_rule's verdict
 
     def as_row(self) -> Dict:
         return asdict(self)
@@ -87,6 +95,46 @@ def split(beta_ego: float, beta_other: Optional[float], margin: float = MARGIN):
     return share, verdict
 
 
+def rear_end_rule(scene: Scene, ego: int, other: int, crash_step: int) -> str:
+    """The follower is at fault in a rear-end collision: "ego" when the ego
+    ran into the other from behind, "other" when the other ran into the
+    ego, "n/a" when the collision is not rear-end (different directions,
+    side by side) or the two are never seen together. The geometry is read
+    at the last step before the collision with both present (at the
+    collision itself they already overlap)."""
+    steps = [k for k in range(crash_step, -1, -1) if scene.valid[ego, k] and scene.valid[other, k]]
+    if not steps:
+        return "n/a"
+    k = next((k for k in steps if k < crash_step), steps[0])
+    turn = np.angle(np.exp(1j * (float(scene.heading[other, k]) - float(scene.heading[ego, k]))))
+    if abs(turn) > REAR_END_HEADING:
+        return "n/a"
+    heading = float(scene.heading[ego, k]) + turn / 2  # the common direction of travel
+    d = scene.position[other, k, :2] - scene.position[ego, k, :2]
+    lon = float(d[0] * np.cos(heading) + d[1] * np.sin(heading))
+    lat = float(-d[0] * np.sin(heading) + d[1] * np.cos(heading))
+    (l_e, w_e), (l_o, w_o) = scene.shape_at(ego, k), scene.shape_at(other, k)
+    # end to end: the other lies off the ego's front or back rather than its side
+    # (offsets in half-extents of the two boxes, so it also holds once they overlap)
+    if abs(lon) / ((l_e + l_o) / 2) <= abs(lat) / ((w_e + w_o) / 2):
+        return "n/a"
+    return "ego" if lon > 0 else "other"
+
+
+def rollout_blame(model, scene: Scene, rollout: Dict, cfg: Optional[ResponsibilityConfig] = None,
+                  lookback: int = LOOKBACK, margin: float = MARGIN) -> Optional[Blame]:
+    """crash_blame for a rollout that ended in a vehicle collision, in the
+    scene rebuilt from it (rollouts.scene_from_rollout): the ego's collision
+    at the last recorded step with the recorded partner (``crash_with``,
+    else the closest agent); None after the end of the log."""
+    step = rollout["end"]["step"]
+    if step >= scene.n_steps:  # nothing logged left to collide with
+        return None
+    with_id = rollout["end"].get("crash_with")
+    other = scene.index(with_id) if with_id is not None and str(with_id) in scene.track_ids else None
+    return crash_blame(model, scene, scene.sdc, step, other, cfg, lookback, margin)
+
+
 def crash_blame(model, scene: Scene, ego: int, crash_step: int, other: Optional[int] = None,
                 cfg: Optional[ResponsibilityConfig] = None, lookback: int = LOOKBACK,
                 margin: float = MARGIN) -> Optional[Blame]:
@@ -109,4 +157,5 @@ def crash_blame(model, scene: Scene, ego: int, crash_step: int, other: Optional[
     beta_other = pair_safety(model, scene, other, ego, window, cfg, generator)
     share, verdict = split(beta_ego, beta_other, margin)
     return Blame(crash_step, window, other, scene.track_ids[other], scene.types[other],
-                 float(beta_ego), None if beta_other is None else float(beta_other), share, verdict)
+                 float(beta_ego), None if beta_other is None else float(beta_other), share, verdict,
+                 rear_end_rule(scene, ego, other, crash_step))

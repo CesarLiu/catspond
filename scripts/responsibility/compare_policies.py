@@ -11,6 +11,11 @@ Per run (policy x adversary mode):
                      safety responsibility exceeded the other's
                      (crashes*.csv; responsibility/blame.py); other-fault
                      likewise
+  rule agreement     of the collisions both the counterfactual verdict and
+                     the rear-end rule ("the follower is at fault") decide
+                     as ego or other, the share where they agree; rule
+                     coverage: the share of attributed collisions the rule
+                     decides at all (rear-end ones)
   stopped            share of windows slower than --min-speed (not judged)
   aggressive         share of judged windows with beta_s or beta_c above the
                      reference's thresholds (summarize_responsibility's
@@ -57,6 +62,7 @@ from responsibility.results import (  # noqa: E402
 from responsibility.rollouts import load_rollout, outcome, rollout_files  # noqa: E402
 
 FAULT_VERDICTS = ("ego", "other", "shared", "ego-only")
+SIDES = ("ego", "other")
 
 
 def parse_args(argv=None):
@@ -113,12 +119,15 @@ def run_row(label, windows, outcomes, crashes, t_s, t_c, t_t, min_speed, levels=
     s = np.array([w["safety"] for w in judged])
     c = np.array([w["courtesy"] for w in judged])
     attributed = [r for r in crashes if r["verdict"] in FAULT_VERDICTS]
+    decided = [r for r in attributed if r["verdict"] in SIDES and r.get("rule") in SIDES]
     row = {
         "run": label,
         "episodes": len(outcomes),
         "crash_rate": _mean([o["crash_vehicle"] for o in outcomes]),
         "ego_fault_share": _mean([r["verdict"] == "ego" for r in attributed]),
         "other_fault_share": _mean([r["verdict"] == "other" for r in attributed]),
+        "rule_agreement": _mean([r["verdict"] == r["rule"] for r in decided]),
+        "rule_coverage": _mean([r.get("rule") in SIDES for r in attributed]),
         "route_completion": _mean([o["route_completion"] for o in outcomes]),
         "arrive_rate": _mean([o["arrive_dest"] for o in outcomes]),
         "out_of_road_rate": _mean([o["out_of_road"] for o in outcomes]),
@@ -152,11 +161,12 @@ def with_reference_ratios(rows, reference):
     return rows
 
 
-PERCENT = ("crash_rate", "ego_fault_share", "other_fault_share", "route_completion", "arrive_rate",
+PERCENT = ("crash_rate", "ego_fault_share", "other_fault_share", "rule_agreement", "rule_coverage",
+           "route_completion", "arrive_rate",
            "out_of_road_rate", "stopped", "aggressive", "aggressive_safety", "aggressive_courtesy", "timid",
            "aggressive_levels")
 COLUMNS = [("run", "run"), ("episodes", "episodes"), ("crash_rate", "crash"), ("ego_fault_share", "ego-fault"),
-           ("route_completion", "route compl."), ("stopped", "stopped"), ("aggressive", "aggressive"),
+           ("rule_agreement", "rule agree"), ("route_completion", "route compl."), ("stopped", "stopped"), ("aggressive", "aggressive"),
            ("aggressive_x_ref", "x ref"), ("timid", "timid"), ("timid_x_ref", "x ref"),
            ("safety_median", "β_s median"), ("courtesy_p90", "β_c p90")]
 

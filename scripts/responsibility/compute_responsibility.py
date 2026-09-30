@@ -27,8 +27,9 @@ simulator did not spawn removed (responsibility/rollouts.py) -- and the ego
 is queried there. Windows stop where the episode did: at a collision, or a
 full metric horizon before any other end. Every collision with another road
 user is also attributed (responsibility/blame.py: the ego's and the other's
-safety responsibility toward each other in the 2 s before it) and written
-to OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
+safety responsibility toward each other in the 2 s before it; "rule": the
+rear-end rule's verdict, the baseline it is compared with) and written to
+OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
 
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
@@ -52,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-from responsibility.blame import crash_blame  # noqa: E402
+from responsibility.blame import rollout_blame  # noqa: E402
 from responsibility.densetnt import DenseTNT  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
@@ -69,7 +70,7 @@ from responsibility.scene import Scene, scene_files  # noqa: E402
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
               "n_neighbours", "safety_against", "courtesy_toward"]
 CRASH_FIELDS = ["scene", "policy", "adv_mode", "crash_step", "window", "other_id", "other_type", "adversary",
-                "beta_ego", "beta_other", "share", "verdict"]
+                "beta_ego", "beta_other", "share", "verdict", "rule"]
 
 
 def _m(value):
@@ -82,12 +83,8 @@ def blame_row(model, scene, agent, rollout, cfg):
     step = rollout["end"]["step"]
     adversary = rollout["adversary"]["track_id"] if rollout["adversary"] is not None else ""
     row = {"scene": rollout["scene_file"], "policy": rollout["policy"], "adv_mode": rollout["adv_mode"],
-           "crash_step": step, "adversary": adversary, "verdict": "unknown"}
-    if step >= scene.n_steps:  # after the log: nothing logged left to collide with
-        return row
-    with_id = rollout["end"].get("crash_with")
-    other = scene.index(with_id) if with_id is not None and str(with_id) in scene.track_ids else None
-    blame = crash_blame(model, scene, agent, step, other, cfg)
+           "crash_step": step, "adversary": adversary, "verdict": "unknown", "rule": "n/a"}
+    blame = rollout_blame(model, scene, rollout, cfg) if agent == scene.sdc else None
     if blame is not None:
         row.update({k: v for k, v in blame.as_row().items() if k in CRASH_FIELDS})
     row["adversary"] = int(bool(adversary) and row.get("other_id") == adversary)
