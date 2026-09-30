@@ -91,3 +91,25 @@ def test_level_shares_come_from_the_given_hmm(tmp_path):
         pickle.dump({"hmm": hmm, "log_courtesy": False, "aggressive_levels": [1]}, f)
     rows = cmp.main(["--runs", str(run), "--hmm", str(tmp_path / "hmm.pkl"), "--out-dir", str(tmp_path / "cmp")])
     assert rows[0]["level_0"] == pytest.approx(0.5) and rows[0]["aggressive_levels"] == pytest.approx(0.5)
+
+
+def test_seeds_are_averaged_per_setting_and_adversary(tmp_path):
+    logged = [("0", 10 + i, 5.0, s, 0.0) for i, s in enumerate([-1.0, -0.2, 0.0, 0.0, 0.2, 1.0])]
+    replay = _run(tmp_path, "replay", "replay", "none", [("arrive_dest", 1.0)], logged)
+    runs = [replay]
+    # two seeds of one setting, tested without and with an adversary: seed 0 crashes in both
+    for seed, (normal, adv) in enumerate([("crash_vehicle", "crash_vehicle"), ("arrive_dest", "crash_vehicle")]):
+        for mode, reason in (("none", normal), ("cat", adv)):
+            runs.append(_run(tmp_path, f"s{seed}_{mode}", f"td3_cat_fair1_0.3_s{seed}", mode,
+                             [(reason, 0.5 + 0.5 * seed)], logged))
+    cmp.main(["--runs", *map(str, runs), "--out-dir", str(tmp_path / "cmp")])
+    assert cmp.setting_of("td3_cat_fair1_0.3_s12/cat") == ("td3_cat_fair1_0.3", "cat")
+    with open(tmp_path / "cmp" / "comparison_seeds.csv") as f:
+        agg = {(r["setting"], r["adv_mode"]): r for r in csv.DictReader(f)}
+    assert list(agg) == [("replay", "none"), ("td3_cat_fair1_0.3", "none"), ("td3_cat_fair1_0.3", "cat")]
+    none, cat = agg[("td3_cat_fair1_0.3", "none")], agg[("td3_cat_fair1_0.3", "cat")]
+    assert none["seeds"] == "2" and float(none["crash_rate"]) == 0.5
+    assert float(none["crash_rate_std"]) == pytest.approx(np.std([1, 0], ddof=1))
+    assert float(cat["crash_rate"]) == 1.0 and float(cat["route_completion"]) == pytest.approx(0.75)
+    md = (tmp_path / "cmp" / "comparison_seeds.md").read_text(encoding="utf-8")
+    assert "| td3_cat_fair1_0.3 | 50.0% ± 70.7% | 100.0% ± 0.0% |" in md  # the crash-rate matrix row

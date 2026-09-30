@@ -32,6 +32,13 @@ Per run (policy x adversary mode):
 Writes OUT/comparison.csv, OUT/comparison.md and OUT/comparison.png (beta_s
 per run; level shares or aggressive/timid shares), and prints the table.
 
+Runs of the same training setting with different seeds (policy names ending
+in _s<seed>, as cat_RLtrain.py names its models) are also averaged:
+OUT/comparison_seeds.csv holds the mean and standard deviation of every
+column per setting and adversary mode, and OUT/comparison_seeds.md one
+table of them plus, for the main columns, a matrix of training setting x
+test adversary mode (the cross evaluation of RESEARCH_PLAN.md M1.4 / M2.3).
+
 Example:
     python -m scripts.responsibility.compare_policies \\
         --runs logs/responsibility/policies/replay/none logs/responsibility/policies/td3_cat/none \\
@@ -42,6 +49,7 @@ Example:
 import argparse
 import csv
 import pickle
+import re
 import sys
 from pathlib import Path
 
@@ -196,6 +204,68 @@ def markdown(rows):
     return "\n".join(lines)
 
 
+SEED = re.compile(r"_s\d+$")
+MATRIX = [("crash_rate", "crash rate"), ("ego_fault_share", "ego-fault share of collisions"),
+          ("route_completion", "route completion"), ("timid", "timid windows"),
+          ("aggressive", "aggressive windows")]
+
+
+def setting_of(label: str):
+    """(training setting, adversary mode) of a run label "<policy>/<mode>",
+    the policy's seed suffix removed: td3_cat_fair1_0.3_s2/cat -> (td3_cat_fair1_0.3, cat)."""
+    policy, _, mode = label.partition("/")
+    return SEED.sub("", policy), mode
+
+
+def aggregate(rows):
+    """Mean and standard deviation over seeds of every numeric column, per
+    (setting, adversary mode), in first-seen order."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(setting_of(row["run"]), []).append(row)
+    out = []
+    for (setting, mode), rs in groups.items():
+        agg = {"setting": setting, "adv_mode": mode, "seeds": len(rs)}
+        for key, value in rs[0].items():
+            if key == "run" or isinstance(value, str):
+                continue
+            v = np.array([r.get(key, np.nan) for r in rs], dtype=float)
+            v = v[np.isfinite(v)]
+            agg[key] = float(v.mean()) if v.size else float("nan")
+            agg[f"{key}_std"] = float(v.std(ddof=1)) if v.size > 1 else float("nan")
+        out.append(agg)
+    return out
+
+
+def _pm(key, row):
+    mean, std = row.get(key), row.get(f"{key}_std")
+    if mean is None or not np.isfinite(mean):
+        return "–"
+    text = fmt(key, mean)
+    if std is not None and np.isfinite(std):
+        text += " ± " + (f"{100 * std:.1f}%" if key in PERCENT else fmt(key, std).lstrip("+"))
+    return text
+
+
+def seeds_markdown(agg):
+    columns = [(k, name) for k, name in COLUMNS if k not in ("run", "episodes")]
+    lines = ["| setting | adv mode | seeds | " + " | ".join(name for _, name in columns) + " |",
+             "|" + "---|" * (len(columns) + 3)]
+    for row in agg:
+        lines.append(f"| {row['setting']} | {row['adv_mode']} | {row['seeds']} | "
+                     + " | ".join(_pm(k, row) for k, _ in columns) + " |")
+    modes = list(dict.fromkeys(r["adv_mode"] for r in agg))
+    settings = list(dict.fromkeys(r["setting"] for r in agg))
+    cell = {(r["setting"], r["adv_mode"]): r for r in agg}
+    for key, title in MATRIX:
+        lines += ["", f"**{title}** (training setting × test adversary; mean ± std over seeds)", "",
+                  "| setting | " + " | ".join(modes) + " |", "|" + "---|" * (len(modes) + 1)]
+        for setting in settings:
+            lines.append(f"| {setting} | " + " | ".join(
+                _pm(key, cell[(setting, m)]) if (setting, m) in cell else "" for m in modes) + " |")
+    return "\n".join(lines)
+
+
 def plot(labels, safety, rows, path):
     import matplotlib
 
@@ -269,9 +339,19 @@ def main(argv=None):
               f"timid beta_s < {t_t:.3f} m (windows at >= {args.min_speed} m/s).")
     (out / "comparison.md").write_text(header + "\n\n" + table + "\n", encoding="utf-8")
     plot(labels, safety, rows, out / "comparison.png")
+    agg = aggregate(rows)
+    with open(out / "comparison_seeds.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for r in agg for k in r)))
+        writer.writeheader()
+        writer.writerows(agg)
+    seeds = seeds_markdown(agg)
+    (out / "comparison_seeds.md").write_text(header + "\n\n" + seeds + "\n", encoding="utf-8")
     print(header + "\n")
     print(table)
-    print(f"\nwrote {out / 'comparison.csv'}, {out / 'comparison.md'}, {out / 'comparison.png'}")
+    if len(agg) < len(rows):
+        print("\nover seeds:\n\n" + seeds)
+    print(f"\nwrote {out / 'comparison.csv'}, {out / 'comparison.md'}, {out / 'comparison.png'}, "
+          f"{out / 'comparison_seeds.csv'}, {out / 'comparison_seeds.md'}")
     return rows
 
 

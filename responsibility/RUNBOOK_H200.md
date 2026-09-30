@@ -234,18 +234,24 @@ python cat_advgen.py --adv_selection fair --resp_threshold $TAU --resp_avoid $RH
 
 ### 8b. RL 训练（TD3，1e6 步，每组 3 个种子）
 
-三组设置：
-- `replay`：没有对手；
-- `cat`：CAT 原版对手；
-- `cat_constrained<TAU>`：责任约束对手；
-- `cat_fair<TAU>_<RHO>`：公平对手（方向 1 的 M1.4）。
+六组设置。前四组是方向 1（M1.4），后两组加上方向 2 的按责任加权碰撞惩罚（M2.2），与 `cat`、`cat_fair` 组成 2×2（M2.3）：
+
+| 名字 | 对手 | 碰撞惩罚 |
+|---|---|---|
+| `replay` | 没有对手 | 原版 |
+| `cat` | CAT 原版 | 原版 |
+| `cat_constrained<TAU>` | 责任约束 | 原版 |
+| `cat_fair<TAU>_<RHO>` | 公平（M1.2） | 原版 |
+| `cat_share` | CAT 原版 | 按责任（`--blame_weighting share`） |
+| `cat_fair<TAU>_<RHO>_share` | 公平 | 按责任 |
 
 ```bash
 mkdir -p logs/rl
+FAIR="--adv_selection fair --resp_threshold $TAU --resp_avoid $RHO"
 g=0
 for seed in 0 1 2; do
   for setting in "--mode replay" "--mode cat" "--mode cat --adv_selection constrained --resp_threshold $TAU" \
-                 "--mode cat --adv_selection fair --resp_threshold $TAU --resp_avoid $RHO"; do
+                 "--mode cat $FAIR" "--mode cat --blame_weighting share" "--mode cat $FAIR --blame_weighting share"; do
     name=$(echo "$setting" | tr -d ' -' )_s$seed
     CUDA_VISIBLE_DEVICES=$((g % $(nvidia-smi -L | wc -l))) nohup python cat_RLtrain.py $setting --seed $seed --save_model \
       > logs/rl/$name.log 2>&1 &
@@ -255,8 +261,12 @@ done
 ```
 
 - 进度：`tail -f logs/rl/*.log`。
-- 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。名字为 `replay`、`cat`、`cat_constrained<TAU>`、`cat_fair<TAU>_<RHO>`，各组分开记录，不会互相覆盖。
+- 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。各组的名字见上表，分开记录，不会互相覆盖。
 - 模型：`models/<名字>_s<seed>*`（加了 `--save_model` 才会保存；每个种子单独一份，第 10 步要用）。
+- `_share` 的两组每次碰撞多两次 DenseTNT 推理（GPU 上约 1–2 s），日志里每次碰撞有一行 `collision at step ... penalty weight ...`。
+- 每次评测时打印 `N collisions attributed: mean penalty weight ...`。
+- 归因明细写到 `logs/blame/<名字>_s<seed>.csv`，第 8d 步汇总。
+- 先确认 `_share` 能正常跑：看最初几次碰撞的那一行，不应有 `warning: ... not attributed`。偶尔一两次无妨（该次碰撞保留全部惩罚），频繁出现就停下来告诉我。
 
 ### 8c. 画学习曲线
 
@@ -266,7 +276,25 @@ for key in route_completion_normal route_completion_adv crash_rate_normal crash_
 done
 ```
 
-比较三组在正常场景和对抗场景下的完成率与碰撞率。关键问题：用"合理的"对手训练出来的策略，泛化是否更好。
+比较各组在正常场景和对抗场景下的完成率与碰撞率。关键问题有两个：
+- 用"合理的"对手训练出来的策略，泛化是否更好（`cat_fair` 对 `cat`）；
+- 只惩罚自车有责任的碰撞，能否减少过度保守（`cat_share` 对 `cat`，`cat_fair_share` 对 `cat_fair`）。
+
+### 8d. 训练中的碰撞归因（M2.2、M2.3）
+
+```bash
+python -m scripts.responsibility.summarize_blame --logs logs/blame/*.csv --out logs/blame/summary.md
+```
+
+每个 `_share` 训练一行：
+- 碰撞次数、各判定的占比、平均惩罚权重 w；
+- `full penalty`：保留全部惩罚（w = 1）的占比；
+- `w < 0.5`：主要是对方责任的占比；
+- 与追尾规则的一致率；
+- 每次归因的耗时；
+- w 在训练过程中的变化（按训练步数分 4 段）。
+
+`cat_share` 的 `w < 0.5` 应明显高于 `cat_fair_share`，因为 CAT 的对手常常直接撞上来。w 随训练下降，说明剩下的碰撞越来越是自车的错。
 
 ## 9. 汇总清单
 
@@ -279,8 +307,8 @@ done
 | 敏感性（可选） | 5 | `logs/sens_*` |
 | 对抗选择离线对比与 τ 标定 | 6 | `--summarize` 表格、TAU |
 | 闭环攻击成功率 ⚠ | 8a | `logs/advgen/closed_*.log` |
-| RL 训练对比 ⚠ | 8b–8c | `logs/*_MDWaymo-seed*/logger.csv` 和曲线 |
-| 策略的双向风格评测 ⚠ | 10 | `rollouts/`、`logs/responsibility/policies/compare/comparison.md` |
+| RL 训练对比 ⚠ | 8b–8d | `logs/*_MDWaymo-seed*/logger.csv` 和曲线、`logs/blame/summary.md` |
+| 策略的双向风格评测与交叉评测 ⚠ | 10 | `rollouts/`、`logs/responsibility/policies/compare/comparison.md`、`comparison_seeds.md` |
 
 ## 10. ⚠ 策略的双向驾驶风格评测（方向 3，M3.0–M3.4）
 
@@ -290,10 +318,14 @@ done
 
 ```bash
 mkdir -p logs/rollouts
+FAIR="--adv_selection fair --resp_threshold $TAU --resp_avoid $RHO"
 # 基线：logged ego 回放，正常场景 + CAT 对手（测试集 400–499）
 python -m scripts.responsibility.collect_rollouts --policy replay --adversary --out_dir rollouts \
     2>&1 | tee logs/rollouts/replay.log
 tail -4 logs/rollouts/replay.log
+# 公平对手下的回放（交叉评测的参照）
+python -m scripts.responsibility.collect_rollouts --policy replay --adversary $FAIR --out_dir rollouts \
+    2>&1 | tee logs/rollouts/replay_fair.log
 ```
 
 最后几行是核查结果：
@@ -301,22 +333,26 @@ tail -4 logs/rollouts/replay.log
 - `adversary: X m off its log`：X 应明显大于 0。如果接近 0，说明对手轨迹没有生效。代码层面已经确认 `eval_policy` 用全局 `env` 没有问题（`env.engine` 是全局单例），这里是实测确认。
 - `plan error lag 0 / lag 1`：对手实际位置与计划轨迹的偏差。预期 lag 1 接近 0，也就是对手比计划晚一步执行。rollout 记录的是实际位置，所以不影响责任的计算，只作记录。
 
-再采集训练好的策略（12 个模型并行，每个一个进程）：
+再采集训练好的策略：18 个模型（第 8b 步的 6 组 × 3 个种子），每个模型在两种测试对手下各跑一次：
 
 ```bash
 for seed in 0 1 2; do
-  for name in replay cat cat_constrained$TAU cat_fair${TAU}_$RHO; do
-    nohup python -m scripts.responsibility.collect_rollouts --policy models/${name}_s$seed \
-      --policy_name td3_${name}_s$seed --adversary --adv_selection cat --out_dir rollouts \
-      > logs/rollouts/td3_${name}_s$seed.log 2>&1 &
+  for name in replay cat cat_constrained$TAU cat_fair${TAU}_$RHO cat_share cat_fair${TAU}_${RHO}_share; do
+    for adv in "--adv_selection cat" "$FAIR"; do
+      tag=$(echo "$adv" | awk '{print $2}')
+      nohup python -m scripts.responsibility.collect_rollouts --policy models/${name}_s$seed \
+        --policy_name td3_${name}_s$seed --adversary $adv --out_dir rollouts \
+        > logs/rollouts/td3_${name}_s${seed}_$tag.log 2>&1 &
+    done
   done
 done
 wait
-ls rollouts/*/*/ | head      # 每个目录 100 个 <scene>.pkl
+ls rollouts/*/                # 每个策略三个目录：none、cat、fair<TAU>_<RHO>
+ls rollouts/*/*/ | head       # 每个目录 100 个 <scene>.pkl
 ```
 
-- 所有策略都在 CAT 原版对手（`--adv_selection cat`）下评测，保证对手条件相同。
-- 想换成责任约束的对手，加 `--adv_selection constrained --resp_threshold $TAU`，输出目录名会变成 `constrained<TAU>`。
+- 交叉评测矩阵（M1.4）：训练设置 × 测试对手（`none`、`cat`、`fair<TAU>_<RHO>`）。每种测试对手下，所有策略面对的对手条件相同。
+- 同一个模型的两次运行都会先跑正常回合（对手要针对这一回合的自车轨迹生成），所以 `none/` 会被写两次。两次的内容应该相同（策略和仿真都是确定性的），只是多花一些时间。
 
 ### 10b. 计算每个 rollout 的责任（M3.2）
 
@@ -335,14 +371,14 @@ wait
 ls $P/*/*/windows*.csv | wc -l
 ```
 
-- 规模：26 组 rollout 目录（回放 2 组 + 12 个模型 × 2 种对手模式），每组 100 个场景，共 2600 个场景 × 1 个 agent。时间约为第 3 步的 2.6 倍（第 3 步是 500 场景 × 2 个 agent）。
-- 进程数：上面是 26 × 4 = 104 个进程。按第 2 步的探测结果调整 `--num-shards`。
+- 规模：57 组 rollout 目录（回放 3 组 + 18 个模型 × 3 种测试对手），每组 100 个场景，共 5700 个场景 × 1 个 agent，约为第 3 步的 5.7 倍（第 3 步是 500 场景 × 2 个 agent）。
+- 进程数：上面是 57 × 4 = 228 个进程，多半太多。按第 2 步的探测结果调整 `--num-shards`，或者分批跑：先跑 `none` 和 `cat` 两种（方向 3 的 M3.4 只需要这两种）。
 
 ### 10c. 对比表（M3.3、M3.4）
 
 ```bash
 P=logs/responsibility/policies
-runs=$(ls -d $P/replay/none $P/replay/cat $P/td3_*/none $P/td3_*/cat)
+runs=$(ls -d $P/replay/none $P/replay/cat $P/replay/fair* $P/td3_*/none $P/td3_*/cat $P/td3_*/fair*)
 # 在回放的 logged 驾驶上拟合等级
 python -m scripts.responsibility.fit_levels --runs $runs --fit-runs $P/replay/none --out-dir $P/levels
 # 阈值取自第一个 run（回放的 logged 驾驶）
@@ -361,11 +397,17 @@ cat $P/compare/comparison.md
 **M3.3 的验收：**
 - `replay/none` 的激进和胆怯占比都应该较小。阈值定义保证：正值窗口里约 10% 超过激进阈值，负值窗口里约 10% 低于胆怯阈值。
 - `replay/cat` 里，对手引起的碰撞应该大多判为 `other`。
+- `rule agree`：与追尾规则（追尾归后车）的一致率，只统计两者都给出判定的碰撞（M2.1 的验收）。覆盖率见 `comparison.csv` 的 `rule_coverage`。
 
-每个种子单独一行。3 个种子的均值和标准差可以从 `comparison.csv` 直接算。
+`comparison.md` 每个种子单独一行。`comparison_seeds.md` 按训练设置和测试对手对 3 个种子取均值 ± 标准差，并给出几张"训练设置 × 测试对手"的矩阵：碰撞率、自车责任碰撞占比、完成率、胆怯和激进窗口占比。这就是 M1.4 的交叉评测表和 M2.3 的 2×2 对比表。
+
+对照计划里的假设：
+- **M3.4**：`td3_cat` 对 `td3_replay`、`replay/none`。CAT 训练降低了碰撞率，胆怯窗口占比是人类的几倍？
+- **M1.4**：`td3_cat_fair…` 在 `none` 和 `fair…` 测试上完成率更高、胆怯更少；在 `cat` 测试上碰撞率不明显变差。
+- **M2.3**：`td3_cat_share` 对 `td3_cat`。完成率提高、胆怯减少，自车责任碰撞不增加。
 
 打包带回：
 
 ```bash
-tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts
+tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts logs/blame
 ```

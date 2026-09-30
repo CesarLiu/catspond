@@ -372,6 +372,15 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 
 `comparison.png` shows β_s per run and the level (or aggressive/timid) shares.
 
+Runs of one training setting with different seeds (policy names ending in
+`_s<seed>`, as `cat_RLtrain.py` names its models) are averaged in
+`comparison_seeds.csv`/`.md`: mean ± standard deviation of every column per
+training setting and test adversary. The markdown adds matrices of training
+setting × test adversary for the crash rate, the ego-fault share, route
+completion and the timid and aggressive shares: the cross evaluation of
+policies trained against different adversaries (and penalties), each tested
+without an adversary, with CAT's and with the fair one.
+
 ### Training with a responsibility-weighted collision penalty
 
 In CAT's training environment a collision does not end the episode: at every
@@ -407,6 +416,16 @@ their DenseTNT with it.
 python cat_RLtrain.py --mode cat --blame_weighting share --seed 0 --save_model          # cat_share_s0
 python cat_RLtrain.py --mode cat --adv_selection fair --resp_threshold 1 --resp_avoid 0.3     --blame_weighting share --seed 0 --save_model                                         # cat_fair1_0.3_share_s0
 ```
+
+```bash
+python -m scripts.responsibility.summarize_blame --logs logs/blame/*.csv --out logs/blame/summary.md
+```
+
+summarises those logs per run. It reports the number of collisions, the
+share of each verdict and the mean weight. It also shows how often the
+full penalty was kept and how often the other was mostly at fault
+(w < 0.5), plus the agreement with the rear-end rule, the time per
+attribution, and the mean weight over spans of training.
 
 The weighting is tested against a stand-in for the training env
 (`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of
