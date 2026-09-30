@@ -96,6 +96,21 @@ def _install_stand_ins() -> None:
         _module("scenarionet.common_utils", read_scenario=unavailable, read_dataset_summary=unavailable)
 
 
+def import_real_scenarionet() -> None:
+    """Imports the installed scenarionet and metadrive (for reading
+    ScenarioNet datasets, i.e. training), which CAT's own ``metadrive/`` at
+    the repository root would otherwise shadow; call it before anything
+    imports UniTraj, so no stand-ins are registered."""
+    here = {REPO.resolve()}
+    saved = list(sys.path)
+    sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() not in here]
+    try:
+        importlib.import_module("scenarionet.common_utils")
+        importlib.import_module("metadrive.scenario.scenario_description")
+    finally:
+        sys.path[:] = saved
+
+
 def import_unitraj(module: str, root=None):
     """``unitraj.<module>`` without running the package initialisers of
     ``unitraj.datasets`` / ``unitraj.models``, which import every model and
@@ -413,8 +428,9 @@ def mtr_predictor(checkpoint, config: Optional[AttrDict] = None, device: str = "
         model = mtr.MotionTransformer(config)
     finally:
         os.chdir(cwd)
-    state = torch.load(checkpoint, map_location="cpu")
-    model.load_state_dict(state.get("state_dict", state))
+    if str(checkpoint) != "random":  # "random": untrained weights, to test the environment
+        state = torch.load(checkpoint, map_location="cpu")
+        model.load_state_dict(state.get("state_dict", state))
     model.motion_decoder.num_motion_modes = num_modes
     model.to(device).eval()
 

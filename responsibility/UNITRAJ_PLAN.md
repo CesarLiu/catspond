@@ -11,6 +11,23 @@
 
 标 🖥 的里程碑需要 GPU（MTR 的 CUDA 算子），只能在服务器上开发和验证；其余的可以离线开发。
 
+## 状态
+
+| 里程碑 | 状态 |
+|---|---|
+| U0 🖥 环境 | 工具已就绪：`setup_unitraj_env.sh`，以及 GPU 冒烟测试 `verify_unitraj --checkpoint random`。待服务器执行（runbook 11a） |
+| U1 数据接口 | **完成**。在真实场景上，第 10、40、70 步的历史和未来与日志对齐，误差 < 3e-6 m |
+| U2 🖥 训练 | 工具已就绪：`train_unitraj.py`（只导入 MTR，不需要 natten、torch_geometric、torch_cluster）、`MTR_womd.yaml`、试点流程。待服务器执行（runbook 11b–11d） |
+| U3 🖥 校准和一致性检查 | 脚本完成，逻辑用替身模型测试过。待有检查点后运行（runbook 11e） |
+| U4 接入 | **完成**：`--model densetnt\|mtr`、`--motion-set sampled\|weighted`、记录和可视化 |
+| U5 🖥 稳健性研究 | 对照脚本 `compare_models.py` 完成。待有 MTR 的运行结果（runbook 11f–11g） |
+
+实现与下文设计的几处不同：
+- **不修补 UniTraj 的代码。** 由适配器把场景裁剪到窗口 [k − 10, k + 80]，片段外的步标为无效，并令 `starting_frame = 0`。这样 UniTraj 往前补零的问题不会触发。
+- **时间戳重新从 0 开始。** 时间戳是模型输入的一部分，训练时总是 0–9 s。
+- **训练用自己的启动脚本。** UniTraj 的 `train.py` 会导入所有模型及其依赖。启动脚本的训练器设置与之相同，唯一差别是每个 epoch 重新打乱训练数据。
+- **CAT 的场景 id 列表**写在 `unitraj_configs/cat_scenario_ids.txt`：500 个文件，497 个不同的 id（有 3 个场景重复）。校准时排除这些场景。
+
 ---
 
 ## 设计决定

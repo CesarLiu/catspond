@@ -15,7 +15,9 @@ verify_densetnt.py checks the DenseTNT wrapper:
   speed      inputs per second: building them (CPU) and predicting (GPU)
 
 It also prints the checkpoint's calibration (calibrate_unitraj.py) if there
-is one.
+is one. --checkpoint random runs everything with an untrained MTR: a test of
+the environment (UniTraj's CUDA ops, the adapter) before training; its
+removal check (near vs far) may then fail, the others must pass.
 
 Example (from the cat repository root, UniTraj environment):
     python -m scripts.responsibility.verify_unitraj --checkpoint ckpt/mtr_womd.ckpt --n 5
@@ -47,7 +49,7 @@ class Report:
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--checkpoint", required=True, help="A trained MTR, or 'random' to test the environment.")
     p.add_argument("--scenes", default="raw_scenes_500")
     p.add_argument("--n", type=int, default=5)
     p.add_argument("--step", type=int, default=10)
@@ -143,7 +145,8 @@ def main():
 
     config = load_config(method=args.unitraj_method, root=args.unitraj_root)
     model = UniTrajModel(mtr_predictor(args.checkpoint, config, device=args.device, root=args.unitraj_root),
-                         Inputs(config, root=args.unitraj_root), temperature=load_calibration(args.checkpoint))
+                         Inputs(config, root=args.unitraj_root),
+                         temperature=1.0 if args.checkpoint == "random" else load_calibration(args.checkpoint))
     report = Report()
     files = [p for p in scene_files(args.scenes) if p.stem.isdigit()][: args.n]
     for path in files:
