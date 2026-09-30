@@ -26,6 +26,9 @@ ego has to handle. Selection rules:
                those, the closest approach if none collides; the least
                responsible candidate if none qualifies
   penalized    argmax score * exp(-max(beta, 0) / penalty), then as cat
+  fair         like constrained, but a candidate must also be avoidable:
+               avoid_j >= rho (below); if no candidate qualifies, the most
+               avoidable one among those within the threshold
 
 **Ego avoidability** of candidate j: the share of the ego's own DenseTNT
 motion set at the generation step -- what drivers with the ego's history
@@ -57,7 +60,7 @@ from responsibility.geometry import BoxTrajectories, collision_cost_matrix
 from responsibility.metrics import ResponsibilityConfig, safety_responsibility
 from responsibility.scene import Scene
 
-RULES = ("cat", "constrained", "penalized")
+RULES = ("cat", "constrained", "penalized", "fair")
 GENERATION_STEP = 10  # CAT plans the adversary from the first 11 logged steps
 
 
@@ -184,7 +187,8 @@ def ego_avoidability(ego_samples: np.ndarray, candidates: np.ndarray, ego_start:
 
 
 def select(rule: str, score: np.ndarray, min_dist: np.ndarray, beta: Optional[np.ndarray],
-           threshold: float = 1.0, penalty: float = 1.0) -> Tuple[int, str]:
+           threshold: float = 1.0, penalty: float = 1.0, avoid: Optional[np.ndarray] = None,
+           min_avoid: float = 0.3) -> Tuple[int, str]:
     """The chosen candidate and why."""
     if rule == "cat" or beta is None:
         return (int(np.argmax(score)), "collision") if np.any(score) else (int(np.argmin(min_dist)), "closest")
@@ -200,16 +204,45 @@ def select(rule: str, score: np.ndarray, min_dist: np.ndarray, beta: Optional[np
         if np.any(weighted):
             return int(np.argmax(weighted)), "penalized collision"
         return int(np.argmin(min_dist)), "closest"
+    if rule == "fair":
+        if avoid is None:
+            raise ValueError("the fair rule needs the candidates' ego avoidability")
+        within = beta <= threshold
+        ok = within & (avoid >= min_avoid)
+        if ok.any():
+            if np.any(score[ok]):
+                return int(np.flatnonzero(ok)[np.argmax(score[ok])]), "avoidable collision within threshold"
+            return int(np.flatnonzero(ok)[np.argmin(min_dist[ok])]), "closest avoidable within threshold"
+        pool = within if within.any() else np.ones_like(within)
+        idx = np.flatnonzero(pool)
+        best = idx[avoid[idx] == avoid[idx].max()]
+        return int(best[np.argmin(min_dist[best])]), "most avoidable (none avoidable enough)"
     raise ValueError(f"rule must be one of {RULES}")
+
+
+def selection_name(args) -> str:
+    """How runs with this adversary are named: cat, constrained<tau>,
+    penalized<p>, fair<tau>_<rho>."""
+    rule = getattr(args, "adv_selection", "cat")
+    if rule == "cat":
+        return "cat"
+    if rule == "constrained":
+        return f"constrained{args.resp_threshold:g}"
+    if rule == "penalized":
+        return f"penalized{args.resp_penalty:g}"
+    return f"fair{args.resp_threshold:g}_{args.resp_avoid:g}"
 
 
 def add_arguments(parser) -> None:
     g = parser.add_argument_group("responsibility-constrained adversary")
     g.add_argument("--adv_selection", default="cat", choices=RULES,
                    help="cat: CAT's original generator; constrained / penalized: limit the adversary's "
-                        "safety responsibility toward the ego (responsibility/adversarial.py).")
+                        "safety responsibility toward the ego; fair: also require that the ego can "
+                        "avoid it (responsibility/adversarial.py).")
     g.add_argument("--resp_threshold", type=float, default=1.0,
-                   help="m; constrained: highest beta a chosen adversary trajectory may have.")
+                   help="m; constrained / fair: highest beta a chosen adversary trajectory may have.")
+    g.add_argument("--resp_avoid", type=float, default=0.3,
+                   help="fair: lowest share of the ego's motion set that must escape the adversary.")
     g.add_argument("--resp_penalty", type=float, default=1.0, help="m; penalized: exp(-beta / penalty).")
     g.add_argument("--resp_samples", type=int, default=40, help="Adversary motion-set size for beta.")
     g.add_argument("--resp_horizon", type=int, default=80, help="10 Hz steps over which beta is measured.")
@@ -291,7 +324,7 @@ class ResponsibleAdvGenerator(_base()):
         self.adv_traj = list(np.concatenate(
             (adv_pos, get_polyline_vel(adv_pos), get_polyline_yaw(adv_pos).reshape(-1, 1)), axis=1))
         # scores only: candidates and samples of every episode would pile up over a training run
-        self.selections.append({k: choice[k] for k in ("rule", "chosen", "why", "score", "min_dist", "beta")})
+        self.selections.append({k: choice[k] for k in ("rule", "chosen", "why", "score", "min_dist", "beta", "avoid")})
         return st["traffic_motion_feat"], self.adv_traj, np.array(trajs_av), bool(np.any(choice["score"]))
 
     def choose(self, scene: Scene, trajs_av, probs_av, ov_size, av_size, seed: int = 0,
@@ -306,13 +339,17 @@ class ResponsibleAdvGenerator(_base()):
         _, _, samples = self.dtnt.sample(dist, self.cfg.n_safety_samples, generator=generator)
         beta = adversary_responsibility(samples, candidates, trajs_av, probs_av, self.cfg, self.args.resp_horizon)
         rule = self.args.adv_selection
-        chosen, why = select(rule, score, min_dist, beta, self.args.resp_threshold, self.args.resp_penalty)
+        avoid, ego_samples = None, None
+        if rule == "fair" or "fair" in (rules or ()):
+            avoid, ego_samples = self.avoidability(scene, candidates, ov_size, av_size, seed)
+        chosen, why = select(rule, score, min_dist, beta, self.args.resp_threshold, self.args.resp_penalty,
+                             avoid, self.args.resp_avoid)
         out = {"rule": rule, "chosen": chosen, "why": why, "trajectory": candidates[chosen],
-               "score": score, "min_dist": min_dist, "beta": beta, "candidates": candidates,
-               "log_scores": log_scores, "samples": samples}
+               "score": score, "min_dist": min_dist, "beta": beta, "avoid": avoid, "candidates": candidates,
+               "log_scores": log_scores, "samples": samples, "ego_samples": ego_samples}
         for other in rules or ():
             out[f"chosen_{other}"] = select(other, score, min_dist, beta, self.args.resp_threshold,
-                                            self.args.resp_penalty)[0]
+                                            self.args.resp_penalty, avoid, self.args.resp_avoid)[0]
         return out
 
     def avoidability(self, scene: Scene, candidates: np.ndarray, ov_size: Dict, av_size: Dict,
@@ -342,6 +379,10 @@ class ResponsibleAdvGenerator(_base()):
             return
         collide = np.mean([s["score"][s["chosen"]] > 0 for s in self.selections])
         beta = np.mean([s["beta"][s["chosen"]] for s in self.selections])
-        print(f"[{self.args.adv_selection}] {len(self.selections)} adversaries: predicted collision in "
-              f"{100 * collide:.0f}%, mean adversary safety responsibility {beta:+.2f} m")
+        line = (f"[{self.args.adv_selection}] {len(self.selections)} adversaries: predicted collision in "
+                f"{100 * collide:.0f}%, mean adversary safety responsibility {beta:+.2f} m")
+        avoid = [s["avoid"][s["chosen"]] for s in self.selections if s.get("avoid") is not None]
+        if avoid:
+            line += f", mean ego avoidability {np.mean(avoid):.2f}"
+        print(line)
 

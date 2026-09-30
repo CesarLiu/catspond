@@ -93,3 +93,33 @@ def test_avoidability_separates_unavoidable_from_avoidable_adversaries():
     np.testing.assert_allclose(avoid, [1.0, 0.0, 0.5])
     assert hits.shape == (10, 3)
     assert hits[:5, 2].all() and not hits[5:, 2].any()
+
+
+def test_fair_selection_needs_avoidable_candidates():
+    score = np.array([0.0, 0.3, 0.1, 0.05, 0.0])
+    min_dist = np.array([5, 0, 1, 1, 2])
+    beta = np.array([0.0, 4.0, 0.8, 0.2, 0.1])
+    avoid = np.array([1.0, 0.0, 0.1, 0.6, 0.9])
+    # constrained would take candidate 2, which the ego can hardly avoid
+    assert select("constrained", score, min_dist, beta, threshold=1.0)[0] == 2
+    assert select("fair", score, min_dist, beta, threshold=1.0, avoid=avoid, min_avoid=0.3) == (
+        3, "avoidable collision within threshold")
+    # no avoidable collision: the closest avoidable candidate within the threshold
+    assert select("fair", score, min_dist, beta, threshold=1.0, avoid=avoid, min_avoid=0.95)[0] == 0
+    # nothing avoidable enough: the most avoidable one within the threshold
+    assert select("fair", score, min_dist, beta, threshold=1.0, avoid=avoid * 0.5, min_avoid=0.8) == (
+        0, "most avoidable (none avoidable enough)")
+    # nothing within the threshold either: the most avoidable of all
+    assert select("fair", score, min_dist, beta + 10, threshold=1.0, avoid=avoid, min_avoid=0.3)[0] == 0
+    with pytest.raises(ValueError, match="avoidability"):
+        select("fair", score, min_dist, beta)
+
+
+def test_runs_are_named_by_their_selection():
+    from types import SimpleNamespace
+
+    from responsibility.adversarial import selection_name
+
+    args = SimpleNamespace(adv_selection="fair", resp_threshold=1.0, resp_penalty=1.0, resp_avoid=0.3)
+    assert selection_name(args) == "fair1_0.3"
+    assert selection_name(SimpleNamespace(adv_selection="cat")) == "cat"

@@ -6,7 +6,7 @@ import os
 
 from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
 from advgen.adv_generator import AdvGenerator  # noqa: F401
-from responsibility.adversarial import make_adv_generator
+from responsibility.adversarial import make_adv_generator, selection_name
 
 from saferl_algo import TD3,utils
 from saferl_plotter.logger import SafeLogger
@@ -88,8 +88,7 @@ if __name__ == "__main__":
 	
 	file_name = args.mode
 	if args.mode == 'cat' and args.adv_selection != 'cat':  # responsibility-constrained adversary
-		file_name += f"_{args.adv_selection}" + (f"{args.resp_threshold:g}" if args.adv_selection == 'constrained'
-												else f"{args.resp_penalty:g}")
+		file_name += "_" + selection_name(args)  # e.g. cat_constrained1, cat_fair1_0.3
 	model_name = f"{file_name}_s{args.seed}"  # per seed: runs with several seeds must not share one model file
 	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
 						fieldnames=['route_completion_normal','crash_rate_normal','route_completion_adv','crash_rate_adv'])

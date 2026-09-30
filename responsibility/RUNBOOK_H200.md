@@ -169,13 +169,13 @@ OUT=logs/sens_s80   SAMPLES=80            SHARDS=32 bash scripts/responsibility/
 
 ## 6. 对抗生成：离线对比与阈值标定
 
-对比 CAT 原版和责任约束版的选择规则。这一步不需要 MetaDrive，按逻辑 ego 开环评估，分 10 份并行跑：
+对比 CAT 原版、责任约束版和公平版（`fair`：对手 β ≤ τ，且自车可避免性 ≥ ρ，方向 1 的 M1.3）的选择规则。这一步不需要 MetaDrive，按 logged ego 开环评估，分 10 份并行跑：
 
 ```bash
 mkdir -p logs/advgen
 for i in $(seq 0 9); do
   python -m scripts.responsibility.benchmark_advgen --first $((i*50)) --n 50 \
-    --thresholds 0.25 0.5 1 2 --out logs/advgen/part_$i.csv --device cuda \
+    --thresholds 0.25 0.5 1 2 --avoid 0.1 0.3 0.5 --out logs/advgen/part_$i.csv --device cuda \
     > logs/advgen/part_$i.log 2>&1 &
 done
 wait
@@ -184,12 +184,15 @@ python -m scripts.responsibility.benchmark_advgen --summarize logs/advgen/part_*
 ```
 
 结果怎么读：
-- 每条规则两列：预测碰撞率、被选中对手轨迹的 β。
-- 最后一行是 logged 对手自身 β 的分布，τ 在这里取，**推荐取 q90**。
-- 下文用 `TAU` 表示选定的阈值：
+- 每条规则的列：预测碰撞率、被选中对手轨迹的 β（均值和中位数）、自车可避免性的均值、"不可避免的碰撞"的占比（撞上且可避免性 < 0.1）。
+- 倒数第二行是 logged 对手自身 β 的分布。τ 在这里取，**推荐取 q90**。
+- 最后一行是 logged 对手的自车可避免性分布。真实的对手几乎都能被躲开，ρ 取得比它的 q10 低一些即可。
+- 选 (τ, ρ) 的标准：`fair@τ,ρ` 的"不可避免的碰撞"接近 0，同时预测碰撞率不低于约 30%。
+- 下文用 `TAU` 和 `RHO` 表示选定的值：
 
 ```bash
 TAU=1.0   # 按上面 --summarize 输出的 logged adversary q90 修改
+RHO=0.3   # 按 fair 规则的碰撞率 / 不可避免碰撞的权衡修改
 ```
 
 ## 7. ⚠ 安装 CAT 的 MetaDrive 仿真依赖（同一个 venv）
@@ -222,6 +225,7 @@ python -c "import torch; print(torch.__version__)"
 python cat_advgen.py --adv_selection cat                                     2>&1 | tee logs/advgen/closed_cat.log
 python cat_advgen.py --adv_selection constrained --resp_threshold $TAU       2>&1 | tee logs/advgen/closed_constrained.log
 python cat_advgen.py --adv_selection penalized --resp_penalty 1.0            2>&1 | tee logs/advgen/closed_penalized.log
+python cat_advgen.py --adv_selection fair --resp_threshold $TAU --resp_avoid $RHO 2>&1 | tee logs/advgen/closed_fair.log
 ```
 
 看进度条里的 `avg_attack_success_rate` 和 `avg_compute_time`。责任约束版在最后还会打印选中对手轨迹的平均 β。
@@ -231,13 +235,15 @@ python cat_advgen.py --adv_selection penalized --resp_penalty 1.0            2>&
 三组设置：
 - `replay`：没有对手；
 - `cat`：CAT 原版对手；
-- `cat_constrained<TAU>`：责任约束对手。
+- `cat_constrained<TAU>`：责任约束对手；
+- `cat_fair<TAU>_<RHO>`：公平对手（方向 1 的 M1.4）。
 
 ```bash
 mkdir -p logs/rl
 g=0
 for seed in 0 1 2; do
-  for setting in "--mode replay" "--mode cat" "--mode cat --adv_selection constrained --resp_threshold $TAU"; do
+  for setting in "--mode replay" "--mode cat" "--mode cat --adv_selection constrained --resp_threshold $TAU" \
+                 "--mode cat --adv_selection fair --resp_threshold $TAU --resp_avoid $RHO"; do
     name=$(echo "$setting" | tr -d ' -' )_s$seed
     CUDA_VISIBLE_DEVICES=$((g % $(nvidia-smi -L | wc -l))) nohup python cat_RLtrain.py $setting --seed $seed --save_model \
       > logs/rl/$name.log 2>&1 &
@@ -247,7 +253,7 @@ done
 ```
 
 - 进度：`tail -f logs/rl/*.log`。
-- 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。名字为 `replay`、`cat`、`cat_constrained<TAU>`，三组分开记录，不会互相覆盖。
+- 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。名字为 `replay`、`cat`、`cat_constrained<TAU>`、`cat_fair<TAU>_<RHO>`，各组分开记录，不会互相覆盖。
 - 模型：`models/<名字>_s<seed>*`（加了 `--save_model` 才会保存；每个种子单独一份，第 10 步要用）。
 
 ### 8c. 画学习曲线
@@ -293,11 +299,11 @@ tail -4 logs/rollouts/replay.log
 - `adversary: X m off its log`：X 应明显大于 0。如果接近 0，说明对手轨迹没有生效。代码层面已经确认 `eval_policy` 用全局 `env` 没有问题（`env.engine` 是全局单例），这里是实测确认。
 - `plan error lag 0 / lag 1`：对手实际位置与计划轨迹的偏差。预期 lag 1 接近 0，也就是对手比计划晚一步执行。rollout 记录的是实际位置，所以不影响责任的计算，只作记录。
 
-再采集训练好的策略（9 个模型并行，每个一个进程）：
+再采集训练好的策略（12 个模型并行，每个一个进程）：
 
 ```bash
 for seed in 0 1 2; do
-  for name in replay cat cat_constrained$TAU; do
+  for name in replay cat cat_constrained$TAU cat_fair${TAU}_$RHO; do
     nohup python -m scripts.responsibility.collect_rollouts --policy models/${name}_s$seed \
       --policy_name td3_${name}_s$seed --adversary --adv_selection cat --out_dir rollouts \
       > logs/rollouts/td3_${name}_s$seed.log 2>&1 &
@@ -327,8 +333,8 @@ wait
 ls $P/*/*/windows*.csv | wc -l
 ```
 
-- 规模：20 组 rollout 目录，每组 100 个场景，共 2000 个场景 × 1 个 agent。时间约为第 3 步的 2 倍（第 3 步是 500 场景 × 2 个 agent）。
-- 进程数：上面是 20 × 4 = 80 个进程。按第 2 步的探测结果调整 `--num-shards`。
+- 规模：26 组 rollout 目录（回放 2 组 + 12 个模型 × 2 种对手模式），每组 100 个场景，共 2600 个场景 × 1 个 agent。时间约为第 3 步的 2.6 倍（第 3 步是 500 场景 × 2 个 agent）。
+- 进程数：上面是 26 × 4 = 104 个进程。按第 2 步的探测结果调整 `--num-shards`。
 
 ### 10c. 对比表（M3.3、M3.4）
 

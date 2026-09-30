@@ -14,7 +14,7 @@ compute_responsibility.py --rollouts (layout: responsibility/rollouts.py).
 
 Output: OUT/<policy_name>/none/<scene>.pkl, and with --adversary
 OUT/<policy_name>/<mode>/<scene>.pkl (mode: cat, constrained<tau>,
-penalized<p>, named as cat_RLtrain.py names its runs), each directory with a
+penalized<p>, fair<tau>_<rho>, named as cat_RLtrain.py names its runs), each directory with a
 config.json. Scenes are the MetaDrive scenario indices --first ... --first+n-1
 (default: CAT's test split 400-499); --num_shards/--shard_index split them
 over processes. Finished scenes are skipped when re-run.
@@ -93,10 +93,10 @@ def parse_args():
 
 
 def adv_mode_name(args) -> str:
-    rule = getattr(args, "adv_selection", "cat")
-    if rule == "cat":
-        return "cat"
-    return f"{rule}{args.resp_threshold:g}" if rule == "constrained" else f"{rule}{args.resp_penalty:g}"
+    """cat, constrained<tau>, penalized<p> or fair<tau>_<rho>, as cat_RLtrain.py names its runs."""
+    from responsibility.adversarial import selection_name
+
+    return selection_name(args)
 
 
 class Recorder:

@@ -2,9 +2,11 @@
 on CAT's scenes, open-loop against the logged ego trajectory (no MetaDrive):
 for every scene and rule, whether the chosen adversary trajectory is predicted
 to collide with the ego, how responsible the adversary is for it (safety
-responsibility toward the ego over 8 s), and how close it gets. The logged
-adversary's own responsibility, computed the same way, is the reference that
-thresholds can be calibrated against.
+responsibility toward the ego over 8 s), how avoidable it is for the ego
+(the share of the ego's DenseTNT motion set that escapes it), and how close
+it gets. The logged adversary's own responsibility and avoidability,
+computed the same way, are the references that tau and rho can be
+calibrated against.
 
 It also checks that the "cat" rule reproduces AdvGenerator.generate: CAT's
 own code is run on the same candidates and must choose the same trajectory;
@@ -13,7 +15,7 @@ and it runs the generator the way cat_advgen.py / cat_RLtrain.py call it
 checking that adv_traj has CAT's format.
 
 Example (from the repository root):
-    python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 \\
+    python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 --avoid 0.1 0.3 0.5 \\
         --out logs/responsibility/advgen_benchmark.csv
 
 Parts run in parallel (--first/--n, one --out each) are combined with
@@ -38,6 +40,7 @@ from responsibility.adversarial import (  # noqa: E402
     RULES,
     ResponsibleAdvGenerator,
     adversary_responsibility,
+    ego_avoidability,
     select,
 )
 from responsibility.scene import Scene, scene_files  # noqa: E402
@@ -49,7 +52,9 @@ def parse_args():
     p.add_argument("--first", type=int, default=0)
     p.add_argument("--n", type=int, default=20)
     p.add_argument("--thresholds", type=float, nargs="+", default=[0.5, 1.0, 2.0],
-                   help="m; the constrained rule is evaluated at each.")
+                   help="m; the constrained and fair rules are evaluated at each.")
+    p.add_argument("--avoid", type=float, nargs="+", default=[0.3],
+                   help="The fair rule is evaluated at each of these minimum ego avoidabilities (rho).")
     p.add_argument("--penalty", type=float, default=1.0, help="m; the penalized rule's scale.")
     p.add_argument("--samples", type=int, default=40)
     p.add_argument("--horizon", type=int, default=80)
@@ -135,17 +140,29 @@ def check_drop_in(gen, description, scene, seed):
     return ok
 
 
+UNAVOIDABLE = 0.1  # ego avoidability below which a collision counts as unavoidable in the summary
+
+
 def summarize(rows):
     print(f"\n{len({r['scene'] for r in rows})} scenes, open-loop against the logged ego")
-    print(f"{'rule':>16} {'collision':>10} {'mean beta':>10} {'median beta':>12}")
+    print(f"{'rule':>18} {'collision':>10} {'mean beta':>10} {'median beta':>12} {'mean avoid':>11} "
+          f"{'unavoidable hits':>17}")
     for name in dict.fromkeys(r["rule"] for r in rows):
         rs = [r for r in rows if r["rule"] == name]
         b = np.array([float(r["beta"]) for r in rs])
-        hit = np.mean([int(r["collision"]) for r in rs])
-        print(f"{name:>16} {100 * hit:9.0f}% {b.mean():+10.2f} {np.median(b):+12.2f}")
+        hit = np.array([int(r["collision"]) for r in rs])
+        avoid = np.array([float(r["avoid"]) if r.get("avoid") not in (None, "") else np.nan for r in rs])
+        unavoidable = np.mean(hit.astype(bool) & (avoid < UNAVOIDABLE)) if np.isfinite(avoid).any() else np.nan
+        print(f"{name:>18} {100 * hit.mean():9.0f}% {b.mean():+10.2f} {np.median(b):+12.2f} "
+              f"{np.nanmean(avoid) if np.isfinite(avoid).any() else np.nan:11.2f} {100 * unavoidable:16.0f}%")
     logged = np.array([float(v) for _, v in sorted({(r["scene"], r["logged_adversary_beta"]) for r in rows})])
     print(f"logged adversary beta: median {np.median(logged):+.2f}, q75 {np.quantile(logged, 0.75):+.2f}, "
-          f"q90 {np.quantile(logged, 0.9):+.2f} m  (thresholds can be calibrated on these)")
+          f"q90 {np.quantile(logged, 0.9):+.2f} m  (tau can be calibrated on these)")
+    avoid = np.array([float(v) for _, v in sorted({(r["scene"], r.get("logged_adversary_avoid", ""))
+                                                    for r in rows}) if v not in (None, "")])
+    if avoid.size:
+        print(f"logged adversary ego avoidability: median {np.median(avoid):.2f}, q10 {np.quantile(avoid, 0.1):.2f}, "
+              f"min {avoid.min():.2f}  (rho can be calibrated on these; 'unavoidable' = avoid < {UNAVOIDABLE:g})")
 
 
 def main():
@@ -163,7 +180,8 @@ def main():
     gen = ResponsibleAdvGenerator(cat_parser, argv=[
         "--adv_selection", "constrained", "--resp_samples", str(args.samples),
         "--resp_horizon", str(args.horizon), "--resp_device", args.device])
-    rules = [("cat", None), ("penalized", None)] + [("constrained", t) for t in args.thresholds]
+    rules = ([("cat", None, None), ("penalized", None, None)] + [("constrained", t, None) for t in args.thresholds]
+             + [("fair", t, r) for t in args.thresholds for r in args.avoid])
     rows, cat_agree = [], []
     drop_in_ok = True
     for path in scene_files(args.scenes)[args.first: args.first + args.n]:
@@ -172,28 +190,39 @@ def main():
         scene = Scene.from_description(copy.deepcopy(description))
         st = cat_storage(description, scene)
         ego_route = list(st["AV_trajs"])
-        out = gen.choose(scene, ego_route, [1.0], st["adv_info"], st["ego_info"], seed=int(path.stem))
-        score, min_dist, beta = out["score"], out["min_dist"], out["beta"]
+        out = gen.choose(scene, ego_route, [1.0], st["adv_info"], st["ego_info"], seed=int(path.stem),
+                         rules=["fair"])
+        score, min_dist, beta, avoid = out["score"], out["min_dist"], out["beta"], out["avoid"]
         adv = scene.index(st["adv_agent"])
         logged = scene.position[adv, 11:91, :2]
         logged_beta = float(adversary_responsibility(out["samples"], logged[None], ego_route, [1.0], gen.cfg,
                                                      args.horizon)[0])
+        logged_avoid = ""
+        if out["ego_samples"] is not None:
+            ego = scene.sdc
+            logged_avoid = round(float(ego_avoidability(
+                out["ego_samples"], logged[None], (scene.position[ego, 10, :2], float(scene.heading[ego, 10])),
+                (scene.position[adv, 10, :2], float(scene.heading[adv, 10])), st["ego_info"], st["adv_info"],
+                horizon=args.horizon)[0][0]), 4)
         if not args.no_cat_check:
             cat_future = cat_choice(st, out["candidates"], out["log_scores"])
             ours = out["candidates"][select("cat", score, min_dist, beta)[0]]
             cat_agree.append(bool(np.allclose(cat_future, ours, atol=1e-6)))
             if len(cat_agree) == 1:
                 drop_in_ok = check_drop_in(gen, description, scene, int(path.stem))
-        line = [f"{path.stem:>4}", f"logged adversary beta {logged_beta:+.2f}"]
-        for rule, t in rules:
-            j, why = select(rule, score, min_dist, beta, threshold=t if t is not None else 1.0, penalty=args.penalty)
-            name = rule if t is None else f"{rule}@{t:g}"
+        line = [f"{path.stem:>4}", f"logged adversary beta {logged_beta:+.2f} avoid {logged_avoid}"]
+        for rule, t, r in rules:
+            j, why = select(rule, score, min_dist, beta, threshold=t if t is not None else 1.0, penalty=args.penalty,
+                            avoid=avoid, min_avoid=r if r is not None else 0.3)
+            name = rule if t is None else f"{rule}@{t:g}" if r is None else f"{rule}@{t:g},{r:g}"
             rows.append({"scene": path.stem, "rule": name, "chosen": j, "why": why,
                          "collision": int(score[j] > 0), "score": round(float(score[j]), 5),
-                         "beta": round(float(beta[j]), 4), "min_dist": int(min_dist[j]),
-                         "logged_adversary_beta": round(logged_beta, 4),
-                         "candidates_colliding": int((score > 0).sum())})
-            line.append(f"{name}: {'HIT' if score[j] > 0 else 'miss'} beta {beta[j]:+.2f}")
+                         "beta": round(float(beta[j]), 4), "avoid": round(float(avoid[j]), 4),
+                         "min_dist": int(min_dist[j]),
+                         "logged_adversary_beta": round(logged_beta, 4), "logged_adversary_avoid": logged_avoid,
+                         "candidates_colliding": int((score > 0).sum()),
+                         "candidates_avoidable_colliding": int(((score > 0) & (avoid >= 0.3)).sum())})
+            line.append(f"{name}: {'HIT' if score[j] > 0 else 'miss'} beta {beta[j]:+.2f} avoid {avoid[j]:.2f}")
         print("  ".join(line), flush=True)
 
     summarize(rows)

@@ -195,9 +195,19 @@ plausibly drive this way anyway, so a collision is one the ego has to handle.
 | `cat` (default) | CAT's original generator, unchanged |
 | `constrained` | the highest collision score among candidates with β ≤ `--resp_threshold` (m); if none of them collides, the closest approach among them; if none qualifies, the least responsible candidate |
 | `penalized` | argmax collision score · exp(−max(β, 0) / `--resp_penalty`) |
+| `fair` | like `constrained`, but a candidate must also be avoidable for the ego: avoidability ≥ `--resp_avoid` (ρ, default 0.3); if none qualifies, the most avoidable candidate within the threshold |
+
+**Ego avoidability** of a candidate is the share of the ego's own DenseTNT
+motion set at the generation step that never touches the adversary driving
+it (footprints covered by three circles, over the full 8 s). That motion set
+is what drivers with the ego's history would do. An avoidability near 0
+means a crash whatever a human in the ego's place does: nothing a policy
+could learn to avoid. The ego's alternatives do not react to the adversary,
+so this underestimates what a reacting driver could avoid.
 
 `cat_advgen.py` and `cat_RLtrain.py` take these options (e.g.
-`python cat_RLtrain.py --mode cat --adv_selection constrained --resp_threshold 1.0`);
+`python cat_RLtrain.py --mode cat --adv_selection fair --resp_threshold 1.0 --resp_avoid 0.3`,
+a run named `cat_fair1_0.3`);
 the generator is a drop-in subclass of CAT's `AdvGenerator`, and
 `cat_advgen.py` prints the collision rate and mean adversary responsibility of
 the chosen trajectories at the end. Courtesy responsibility is not used here:
@@ -207,28 +217,38 @@ goals is the same for every candidate.
 Offline comparison (no MetaDrive), open-loop against the logged ego:
 
 ```bash
-python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 \
+python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 --avoid 0.1 0.3 0.5 \
     --out logs/responsibility/advgen_benchmark.csv
 ```
 
-It reports, per rule, how often the chosen trajectory is predicted to
-collide and the chosen adversaries' responsibility; it also reports the
-logged adversaries' own responsibility, to calibrate `--resp_threshold` on.
-On the first 20 scenes:
+It reports, per rule:
+- how often the chosen trajectory is predicted to collide;
+- the chosen adversaries' responsibility and ego avoidability;
+- the share of scenes with an *unavoidable* collision (avoidability < 0.1).
 
-| rule | predicted collision | adversary β mean / median |
-|---|---|---|
-| `cat` | 95% | +3.96 / +3.40 m |
-| `penalized` (1 m) | 95% | +2.81 / +1.59 m |
-| `constrained` 2 m | 50% | +0.98 / +1.00 m |
-| `constrained` 1 m | 30% | +0.51 / +0.56 m |
-| `constrained` 0.5 m | 15% | +0.10 / +0.06 m |
-| logged adversaries | – | median 0.00, q90 +0.35 m |
+It also reports the logged adversaries' own responsibility and avoidability,
+to calibrate `--resp_threshold` (τ) and `--resp_avoid` (ρ) on. On the first
+20 scenes:
+
+| rule | predicted collision | adversary β mean / median | ego avoidability | unavoidable collisions |
+|---|---|---|---|---|
+| `cat` | 95% | +3.96 / +3.40 m | 0.29 | 30% |
+| `penalized` (1 m) | 95% | +2.81 / +1.59 m | 0.39 | 20% |
+| `constrained` 2 m | 50% | +0.98 / +1.00 m | 0.62 | 10% |
+| `constrained` 1 m | 30% | +0.51 / +0.56 m | 0.58 | 5% |
+| `constrained` 0.5 m | 15% | +0.10 / +0.06 m | 0.79 | 0% |
+| `fair` 2 m, ρ 0.3 | 40% | +0.74 / +0.83 m | 0.81 | 0% |
+| `fair` 1 m, ρ 0.3 | 25% | +0.34 / +0.24 m | 0.81 | 0% |
+| `fair` 1 m, ρ 0.5 | 15% | +0.23 / +0.06 m | 0.89 | 0% |
+| logged adversaries | – | median 0.00, q90 +0.35 m | median 0.95, q10 0.61, min 0.28 | – |
 
 CAT's adversaries give up metres of margin their own alternatives would have
-kept, far beyond anything the logged adversaries do. Asking them to stay
-within logged-like responsibility costs attack success; the collisions that
-remain are the ones the ego has to handle.
+kept, far beyond anything the logged adversaries do. In almost a third of the
+scenes they produce a crash that no plausible ego motion escapes, while every
+logged adversary leaves the ego a way out (avoidability at least 0.28).
+Bounding the adversary's responsibility removes most of those crashes, and
+`fair` removes all of them. Each constraint costs attack success; the
+collisions that remain are the ones the ego can and has to handle.
 It also checks that the `cat` rule reproduces `AdvGenerator.generate` exactly
 (CAT's own code run on the same candidates), and it runs the drop-in
 generator the way CAT's scripts call it. Candidates are the adversary
