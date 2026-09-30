@@ -218,7 +218,7 @@ Offline comparison (no MetaDrive), open-loop against the logged ego:
 
 ```bash
 python -m scripts.responsibility.benchmark_advgen --n 50 --thresholds 0.5 1 2 --avoid 0.1 0.3 0.5 \
-    --out logs/responsibility/advgen_benchmark.csv
+    --out logs/responsibility/advgen_benchmark.csv --plot logs/responsibility/advgen_tradeoff.png
 ```
 
 It reports, per rule:
@@ -249,6 +249,20 @@ logged adversary leaves the ego a way out (avoidability at least 0.28).
 Bounding the adversary's responsibility removes most of those crashes, and
 `fair` removes all of them. Each constraint costs attack success; the
 collisions that remain are the ones the ego can and has to handle.
+
+`--plot tradeoff.png` draws this trade-off: predicted collision rate
+against the chosen adversaries' mean β, and against the share of
+unavoidable collisions, one curve over τ for `constrained` and for `fair` at
+each ρ. The summary ends with the `fair` settings recommended for RL. A
+setting must keep a predicted collision rate of `--min-collision` (30%);
+among those, the ones with the fewest unavoidable collisions come first,
+then the ones whose adversary is least responsible. On the first 20 scenes
+(τ ∈ {0.25, 0.5, 1, 2} m, ρ ∈ {0.1, 0.3, 0.5}), `fair` has no unavoidable
+collision anywhere. Only τ = 2 m keeps 30% (ρ 0.5: 30%, ρ 0.3 and 0.1:
+40%). At the logged adversaries' q90 (τ ≈ 0.35 m), every rule stays at
+10–15%. A fair adversary that is as responsible as logged drivers rarely
+produces a collision against the logged ego, so the attack rate and a
+realistic τ have to be traded off. The 500-scene run decides.
 It also checks that the `cat` rule reproduces `AdvGenerator.generate` exactly
 (CAT's own code run on the same candidates), and it runs the drop-in
 generator the way CAT's scripts call it. Candidates are the adversary

@@ -180,14 +180,16 @@ for i in $(seq 0 9); do
 done
 wait
 grep -h "reproduces" logs/advgen/part_*.log             # 每份都应是 50/50：cat 规则与 CAT 原版一致
-python -m scripts.responsibility.benchmark_advgen --summarize logs/advgen/part_*.csv
+python -m scripts.responsibility.benchmark_advgen --summarize logs/advgen/part_*.csv --plot logs/advgen/tradeoff.png
 ```
 
 结果怎么读：
 - 每条规则的列：预测碰撞率、被选中对手轨迹的 β（均值和中位数）、自车可避免性的均值、"不可避免的碰撞"的占比（撞上且可避免性 < 0.1）。
 - 倒数第二行是 logged 对手自身 β 的分布。τ 在这里取，**推荐取 q90**。
 - 最后一行是 logged 对手的自车可避免性分布。真实的对手几乎都能被躲开，ρ 取得比它的 q10 低一些即可。
-- 选 (τ, ρ) 的标准：`fair@τ,ρ` 的"不可避免的碰撞"接近 0，同时预测碰撞率不低于约 30%。
+- 选 (τ, ρ) 的标准：`fair@τ,ρ` 的"不可避免的碰撞"接近 0，同时预测碰撞率不低于约 30%。汇总的最后几行按这个标准列出推荐的两组，并直接给出 `TAU=… RHO=…`（门槛用 `--min-collision` 修改）。
+- `tradeoff.png` 是权衡曲线（M1.3）：左图是碰撞率 vs 被选中对手的平均 β，右图是碰撞率 vs 不可避免碰撞占比；每条线是一条规则随 τ 的变化，点旁标着 τ。
+- 前 20 个场景上，只有 τ = 2 m 能保住 30%，而 logged 对手的 q90 约 0.35 m（那里的碰撞率只有 10–15%）。如果 500 个场景也是这样，两个标准不能同时满足，要取舍。备选：取推荐的 τ；或者放宽到 τ = 1（约 25%）；或者两组都训练。
 - 下文用 `TAU` 和 `RHO` 表示选定的值：
 
 ```bash
