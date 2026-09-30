@@ -42,7 +42,7 @@ def make_scene(tracks, sdc="0", ooi=("0", "1")):
         "tracks": {str(k): v for k, v in tracks.items()},
         "map_features": {
             "100": {"type": "LANE_SURFACE_STREET", "polyline": np.array([[0.0, 0, 0], [50, 0, 0], [100, 0, 0]])},
-            "101": {"type": "STOP_SIGN", "position": np.array([5.0, 5.0, 0.0])},
+            "101": {"type": "STOP_SIGN", "position": np.array([5.0, 5.0, 0.0]), "lane": ["100"]},
         },
         "dynamic_map_states": {
             "200": {"type": "TRAFFIC_LIGHT", "lane": "100", "stop_point": np.array([20.0, 0.0, 0.0]),

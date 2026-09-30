@@ -122,6 +122,33 @@ class Scene:
             dynamic_map_states=sd["dynamic_map_states"],
         )
 
+    def to_description(self, dt: float = 0.1, dataset: str = "waymo") -> Dict:
+        """The scene as a ScenarioNet / MetaDrive scenario description again
+        (what ``from_description`` reads), e.g. for UniTraj; works for scenes
+        rebuilt from rollouts too. Only what ``from_description`` keeps
+        survives the round trip."""
+        tracks = {}
+        for i, tid in enumerate(self.track_ids):
+            tracks[tid] = {
+                "type": self.types[i],
+                "state": {"position": self.position[i].copy(), "heading": self.heading[i].copy(),
+                          "velocity": self.velocity[i].copy(), "length": self.length[i].copy(),
+                          "width": self.width[i].copy(), "height": self.height[i].copy(),
+                          "valid": self.valid[i].copy()},
+                "metadata": {"track_length": self.n_steps, "type": self.types[i], "object_id": tid,
+                             "dataset": dataset},
+            }
+        return {
+            "id": self.scenario_id,
+            "tracks": tracks,
+            "map_features": self.map_features,
+            "dynamic_map_states": self.dynamic_map_states,
+            "metadata": {"scenario_id": self.scenario_id, "sdc_id": self.track_ids[self.sdc],
+                         "objects_of_interest": [self.track_ids[i] for i in self.objects_of_interest],
+                         "ts": np.arange(self.n_steps, dtype=np.float64) * dt, "dataset": dataset,
+                         "track_length": self.n_steps},
+        }
+
     @classmethod
     def load(cls, path) -> "Scene":
         with open(path, "rb") as f:
