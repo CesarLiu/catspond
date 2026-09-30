@@ -265,6 +265,27 @@ safety moves by 0.4 m on average), so compare a policy against **the
 replayed log** (`--policy replay` rollouts), not against the plain logged
 run: that is the logged driving in the scene the policy actually saw.
 
+### Recording rollouts (on the server, needs MetaDrive)
+
+```bash
+# the reference: the logged ego replayed, without and with CAT's adversary
+python -m scripts.responsibility.collect_rollouts --policy replay --adversary --out_dir rollouts
+# a TD3 policy saved by cat_RLtrain.py --save_model (models/<mode>_s<seed>)
+python -m scripts.responsibility.collect_rollouts --policy models/cat_s0 --policy_name td3_cat_s0 \
+    --adversary --adv_selection cat --out_dir rollouts
+```
+
+Each scene (default: CAT's test split, 400–499) is played the way CAT's
+`eval_policy` does it: a normal episode, then, with `--adversary`, an
+adversary generated against the ego's own trajectory from that episode
+(`--adv_selection` as for `cat_RLtrain.py`) and a second episode with it.
+Rollouts go to `rollouts/<policy_name>/none/` and `.../<mode>/`. Two checks
+are printed: with `--policy replay`, the recorded ego against the logged one
+(should stay below 0.1 m, which also confirms that state i is the log's step
+i), and in adversarial episodes how far the adversary left its logged track
+and whether it follows its plan with a lag of 0 or 1 step. The recording
+logic is tested against a stand-in environment (`tests/responsibility/test_collect.py`).
+
 ### Comparing policies: aggressive and timid, and whose fault the collisions were
 
 Responsibility has two directions. β_s > 0 is aggressive: the agent kept

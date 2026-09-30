@@ -248,7 +248,7 @@ done
 
 - 进度：`tail -f logs/rl/*.log`。
 - 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。名字为 `replay`、`cat`、`cat_constrained<TAU>`，三组分开记录，不会互相覆盖。
-- 模型：`models/<名字>*`（加了 `--save_model` 才会保存）。
+- 模型：`models/<名字>_s<seed>*`（加了 `--save_model` 才会保存；每个种子单独一份，第 10 步要用）。
 
 ### 8c. 画学习曲线
 
@@ -272,9 +272,92 @@ done
 | 对抗选择离线对比与 τ 标定 | 6 | `--summarize` 表格、TAU |
 | 闭环攻击成功率 ⚠ | 8a | `logs/advgen/closed_*.log` |
 | RL 训练对比 ⚠ | 8b–8c | `logs/*_MDWaymo-seed*/logger.csv` 和曲线 |
+| 策略的双向风格评测 ⚠ | 10 | `rollouts/`、`logs/responsibility/policies/compare/comparison.md` |
 
-## 尚未实现：训练后策略自身的责任
+## 10. ⚠ 策略的双向驾驶风格评测（方向 3，M3.0–M3.4）
 
-"训练后的 ego 策略本身有多激进"这一项还缺一个脚本：在 MetaDrive 里用训练好的策略跑 500 个场景，记录 ego 轨迹。
-`Scene.with_track(...)` 已经可以把 ego 的轨迹替换成仿真轨迹；再用第 3 步同样的流程计算责任，并用 `summarize_responsibility --reference logs/responsibility/sdc` 和 logged 驾驶对比。
-需要的话我可以补上这个脚本（它依赖 MetaDrive，需要在服务器上调试）。
+依赖第 8b 步保存的模型（`models/<名字>_s<seed>*`）。`replay` 基线不需要模型，可以先跑，顺便完成第 10a 步的核查。
+
+### 10a. 采集 rollout，并核查 CAT 的评测流程（M3.0、M3.1）
+
+```bash
+mkdir -p logs/rollouts
+# 基线：logged ego 回放，正常场景 + CAT 对手（测试集 400–499）
+python -m scripts.responsibility.collect_rollouts --policy replay --adversary --out_dir rollouts \
+    2>&1 | tee logs/rollouts/replay.log
+tail -4 logs/rollouts/replay.log
+```
+
+最后几行是核查结果：
+- `replay: max ego error ... m`：应 < 0.1 m。这同时确认了 rollout 的第 i 个状态对应场景的第 i 步。如果误差很大，先停下来告诉我。
+- `adversary: X m off its log`：X 应明显大于 0。如果接近 0，说明对手轨迹没有生效。代码层面已经确认 `eval_policy` 用全局 `env` 没有问题（`env.engine` 是全局单例），这里是实测确认。
+- `plan error lag 0 / lag 1`：对手实际位置与计划轨迹的偏差。预期 lag 1 接近 0，也就是对手比计划晚一步执行。rollout 记录的是实际位置，所以不影响责任的计算，只作记录。
+
+再采集训练好的策略（9 个模型并行，每个一个进程）：
+
+```bash
+for seed in 0 1 2; do
+  for name in replay cat cat_constrained$TAU; do
+    nohup python -m scripts.responsibility.collect_rollouts --policy models/${name}_s$seed \
+      --policy_name td3_${name}_s$seed --adversary --adv_selection cat --out_dir rollouts \
+      > logs/rollouts/td3_${name}_s$seed.log 2>&1 &
+  done
+done
+wait
+ls rollouts/*/*/ | head      # 每个目录 100 个 <scene>.pkl
+```
+
+- 所有策略都在 CAT 原版对手（`--adv_selection cat`）下评测，保证对手条件相同。
+- 想换成责任约束的对手，加 `--adv_selection constrained --resp_threshold $TAU`，输出目录名会变成 `constrained<TAU>`。
+
+### 10b. 计算每个 rollout 的责任（M3.2）
+
+与第 3 步是同一个脚本，只是加了 `--rollouts`。发生碰撞的回合还会做归因，结果写到 `crashes.csv`。
+
+```bash
+P=logs/responsibility/policies
+for dir in rollouts/*/*/; do
+  run=$P/$(basename $(dirname $dir))/$(basename $dir)
+  for i in $(seq 0 3); do
+    nohup python -m scripts.responsibility.compute_responsibility --rollouts $dir --out-dir $run \
+      --num-shards 4 --shard-index $i --device cuda > /dev/null 2>&1 &
+  done
+done
+wait
+ls $P/*/*/windows*.csv | wc -l
+```
+
+- 规模：20 组 rollout 目录，每组 100 个场景，共 2000 个场景 × 1 个 agent。时间约为第 3 步的 2 倍（第 3 步是 500 场景 × 2 个 agent）。
+- 进程数：上面是 20 × 4 = 80 个进程。按第 2 步的探测结果调整 `--num-shards`。
+
+### 10c. 对比表（M3.3、M3.4）
+
+```bash
+P=logs/responsibility/policies
+runs=$(ls -d $P/replay/none $P/replay/cat $P/td3_*/none $P/td3_*/cat)
+# 在回放的 logged 驾驶上拟合等级
+python -m scripts.responsibility.fit_levels --runs $runs --fit-runs $P/replay/none --out-dir $P/levels
+# 阈值取自第一个 run（回放的 logged 驾驶）
+python -m scripts.responsibility.compare_policies --runs $runs --hmm $P/levels/hmm.pkl --out-dir $P/compare
+cat $P/compare/comparison.md
+```
+
+**参照为什么用回放，而不是第 3 步的 `logs/responsibility/sdc`：** MetaDrive 不生成静止车辆。在停车多的场景里，这会让 β_s 平均变化 0.4 m。回放的 logged 驾驶面对的场景与策略完全相同，比较才公平。
+
+表里要看的：
+- **碰撞率**和**自车责任碰撞占比**：碰撞有多少是自车的错。
+- **激进 / 胆怯窗口占比**，以及相对参照的倍数（`× ref`）。
+- **stopped**：停车窗口的占比。停着不动是最极端的胆怯，但这些窗口不参与判定，所以单独列出。
+- **各等级占比**。
+
+**M3.3 的验收：**
+- `replay/none` 的激进和胆怯占比都应该较小。阈值定义保证：正值窗口里约 10% 超过激进阈值，负值窗口里约 10% 低于胆怯阈值。
+- `replay/cat` 里，对手引起的碰撞应该大多判为 `other`。
+
+每个种子单独一行。3 个种子的均值和标准差可以从 `comparison.csv` 直接算。
+
+打包带回：
+
+```bash
+tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts
+```

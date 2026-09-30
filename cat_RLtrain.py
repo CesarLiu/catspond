@@ -90,6 +90,7 @@ if __name__ == "__main__":
 	if args.mode == 'cat' and args.adv_selection != 'cat':  # responsibility-constrained adversary
 		file_name += f"_{args.adv_selection}" + (f"{args.resp_threshold:g}" if args.adv_selection == 'constrained'
 												else f"{args.resp_penalty:g}")
+	model_name = f"{file_name}_s{args.seed}"  # per seed: runs with several seeds must not share one model file
 	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
 						fieldnames=['route_completion_normal','crash_rate_normal','route_completion_adv','crash_rate_adv'])
 
@@ -153,7 +154,7 @@ if __name__ == "__main__":
 	
 
 	if args.load_model != "":
-		policy_file = file_name if args.load_model == "default" else args.load_model
+		policy_file = model_name if args.load_model == "default" else args.load_model
 		policy.load(f"./models/{policy_file}")
 
 	replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
@@ -221,7 +222,7 @@ if __name__ == "__main__":
 				
 				env = WaymoEnv(config=config_train)
 
-				if args.save_model: policy.save(f"./models/{file_name}")
+				if args.save_model: policy.save(f"./models/{model_name}")
 			
 			# Reset environment
 			state, done = env.reset(), False

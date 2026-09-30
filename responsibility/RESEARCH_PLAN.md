@@ -13,10 +13,12 @@
 **目标：** 对任意驾驶策略，给出碰撞率之外的评价：它的碰撞里有多少是自己的责任；它有多少时间比人类激进（β_s > 0 且偏高），有多少时间比人类胆怯（β_s < 0，保持了比常规备选动作更大的余量）；它对他车计划的影响（β_c）；以及它的责任等级分布与 logged 人类驾驶的差异。
 
 ### M3.0 🖥 CAT 评测流程核查（半天）
+> **状态：** `eval_policy` 的疑点已从代码排除：`BaseEnv.engine` 返回全局单例 `BaseEngine.singleton`，所以 `env.engine` 就是 `eval_env` 的引擎，对手轨迹会生效。步对齐和对手执行的滞后（预期晚一步）由 `collect_rollouts.py` 在服务器上实测打印，见 runbook 第 10a 步。另外修复了 `cat_RLtrain.py` 的模型文件不区分种子、3 个种子互相覆盖的问题，现在保存为 `models/<名字>_s<seed>`。
 - 核查 `cat_RLtrain.py::eval_policy` 的对抗评测：它用全局 `env` 而不是 `eval_env` 调 `set_adv_info`。在 `eval_env` 上确认对手轨迹确实生效：对抗回合里对手的位置应偏离 logged 轨迹。如果没生效，修复并记录，因为之前所有"对抗评测"数字都受影响。
 - 确认 MetaDrive 的仿真步长是 0.1 s，且 `log_AV_history` 记录的第 i 条对应场景的第 i 步（与 CAT 用 `ego_traj[11:91]` 的假设一致）。
 
 ### M3.1 🖥 策略 rollout 采集：`scripts/responsibility/collect_rollouts.py`（2–3 天）
+> **状态：** 脚本已写好，记录逻辑有不依赖 MetaDrive 的单元测试（`test_collect.py`）。待在服务器上跑 `replay` 验收，见 runbook 第 10a 步。
 - **输入：** 策略，可以是 TD3 模型（`policy.load(models/<name>)`）或 `replay`（`ReplayEgoCarPolicy`，作为 logged 基线）；场景范围默认测试集 400–499，也可以是全部 500 个；对手模式 `none | cat | constrained | fair`（后两种沿用 `--adv_selection` 的参数）。
 - **每个回合记录：**
   - 场景号；
@@ -28,6 +30,7 @@
 - **验收：** `replay` 策略的 rollout 与 logged 自车轨迹逐步一致（位置误差 < 0.1 m）；输出文件的结构有单元测试覆盖（不依赖 MetaDrive）。
 
 ### M3.2 从 rollout 重建场景：`responsibility/rollouts.py`（1–2 天，可离线开发）
+> **状态：** 已完成。在真实场景上，回放 rollout 算出的值与剔除未生成物体后的 logged 场景完全一致（`verify_densetnt` 的 rollout 检查）。剔除静止车辆的影响：停车多的场景 1 里，β_s 平均变化 0.39 m，所以策略对比的参照必须用回放的 logged 驾驶。
 - `scene_from_rollout(scene, rollout)`：
   - 用 `Scene.with_track` 把自车替换成仿真轨迹；
   - 如果有对手，把对手替换成 `adv_traj`；
@@ -39,6 +42,7 @@
   - 单元测试：提前结束、对手替换、静止车剔除。
 
 ### M3.3 双向判定与策略对比：`summarize_responsibility` 扩展 + `compare_policies.py`（2 天，可离线开发）
+> **状态：** 已完成。碰撞归因实现在 `responsibility/blame.py`，M2.1 直接复用。归因由 `compute_responsibility --rollouts` 写到 `crashes.csv`。
 - **胆怯阈值：** 在 logged SDC 的 β_s 负值上取 `--timid-quantile`（默认 q10），作为 `timid` 阈值；每个窗口和场景都给出激进、胆怯两个方向的标记。
 - **碰撞归因：** 对每次碰撞，取碰撞前 2 s 窗口，算自车对碰撞对象的 β_s 和对方对自车的 β_s。对方取距离自车最近的车，或者对手车。自车 β 高且对方低，判为"自车责任碰撞"。
 - **`compare_policies.py`：** 输入多个 rollout 的责任运行结果和 logged SDC 参照，输出一张表：
