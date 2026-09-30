@@ -60,3 +60,36 @@ def test_selection_rules():
     assert select("cat", np.zeros(4), min_dist, beta) == (1, "closest")
     with pytest.raises(ValueError):
         select("nope", score, min_dist, beta)
+
+
+def test_path_headings_follow_the_motion_and_hold_while_standing():
+    from responsibility.adversarial import path_headings
+
+    traj = np.array([[0.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0], [0.0, 1.0]])
+    h = path_headings(traj, origin=np.array([0.0, 0.0]), start_heading=0.3)
+    np.testing.assert_allclose(h, [0.3, 0.3, np.pi / 4, np.pi / 4, np.pi])
+    batch = path_headings(np.stack([traj, traj]), origin=np.zeros(2), start_heading=0.3)
+    assert batch.shape == (2, 5)
+
+
+def _ego_motion_set():
+    """Half the ego's alternatives keep 10 m/s in its lane, half brake to a stop within 1 s."""
+    keep = _line(0.0)
+    t = np.arange(1, 81) * 0.1
+    brake = np.stack([np.minimum(10 * t - 5 * t ** 2, 5.0) * (t <= 1) + 5.0 * (t > 1), np.zeros(80)], -1)
+    return np.stack([keep] * 5 + [brake] * 5)
+
+
+def test_avoidability_separates_unavoidable_from_avoidable_adversaries():
+    from responsibility.adversarial import ego_avoidability
+
+    t = np.arange(1, 81) * 0.1
+    parallel = _line(8.0)  # another lane throughout: nothing to avoid
+    head_on = np.stack([60.0 - 12.0 * t, np.zeros(80)], -1)  # sweeps the whole lane: nobody escapes
+    lateral = np.clip(3.5 - 3.5 * t, 0.0, None)
+    cut_in = np.stack([15.0 + 5.0 * t, lateral], -1)  # slow car cutting in ahead: only braking escapes
+    avoid, hits = ego_avoidability(_ego_motion_set(), np.stack([parallel, head_on, cut_in]),
+                                   (np.zeros(2), 0.0), (np.array([15.0, 3.5]), 0.0), SIZE, SIZE)
+    np.testing.assert_allclose(avoid, [1.0, 0.0, 0.5])
+    assert hits.shape == (10, 3)
+    assert hits[:5, 2].all() and not hits[5:, 2].any()

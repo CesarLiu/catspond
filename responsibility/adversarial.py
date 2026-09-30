@@ -27,6 +27,15 @@ ego has to handle. Selection rules:
                responsible candidate if none qualifies
   penalized    argmax score * exp(-max(beta, 0) / penalty), then as cat
 
+**Ego avoidability** of candidate j: the share of the ego's own DenseTNT
+motion set at the generation step -- what drivers with the ego's history
+would do -- that never touches the adversary driving j (footprints covered by
+circles, over the whole 8 s). avoid_j ~ 0: whatever a human in the ego's
+place does, j hits it -- an unavoidable crash, useless to learn from;
+avoid_j ~ 1: nearly every plausible ego motion escapes it. The ego's motion
+is open-loop (it does not react to j), so this underestimates what a
+reacting driver could avoid.
+
 Courtesy responsibility is not used: DenseTNT conditions on history only, so
 the adversary's influence on the ego's predicted goals is the same for every
 candidate.
@@ -44,10 +53,12 @@ import numpy as np
 import torch
 
 from responsibility.densetnt import DenseTNT, cat_instance
+from responsibility.geometry import BoxTrajectories, collision_cost_matrix
 from responsibility.metrics import ResponsibilityConfig, safety_responsibility
 from responsibility.scene import Scene
 
 RULES = ("cat", "constrained", "penalized")
+GENERATION_STEP = 10  # CAT plans the adversary from the first 11 logged steps
 
 
 def cat_candidate_probs(log_scores: np.ndarray) -> np.ndarray:
@@ -123,6 +134,55 @@ def adversary_responsibility(samples: np.ndarray, candidates: np.ndarray, trajs_
     return beta
 
 
+def path_headings(traj: np.ndarray, origin: np.ndarray, start_heading: float, min_step: float = 0.05) -> np.ndarray:
+    """Headings [..., T] along trajectories [..., T, 2] that continue from
+    ``origin`` (the position one step before their first point): the
+    direction of each step's motion, held from the previous step while the
+    agent moves less than ``min_step`` m (standing), ``start_heading`` before
+    it first moves."""
+    traj = np.asarray(traj, dtype=np.float64)
+    prev = np.concatenate([np.broadcast_to(np.asarray(origin, dtype=np.float64), traj[..., :1, :].shape),
+                           traj[..., :-1, :]], axis=-2)
+    step = traj - prev
+    moving = np.linalg.norm(step, axis=-1) > min_step
+    angle = np.arctan2(step[..., 1], step[..., 0])
+    out = np.empty(traj.shape[:-1])
+    current = np.full(traj.shape[:-2], float(start_heading))
+    for t in range(traj.shape[-2]):
+        current = np.where(moving[..., t], angle[..., t], current)
+        out[..., t] = current
+    return out
+
+
+def ego_avoidability(ego_samples: np.ndarray, candidates: np.ndarray, ego_start: Tuple[np.ndarray, float],
+                     adv_start: Tuple[np.ndarray, float], ego_size: Dict, adv_size: Dict,
+                     horizon: int = 80, n_circles: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    """``avoid`` [K]: the share of the ego's motion set that never touches
+    candidate j, and ``hits`` [N, K] (sample n touches candidate j).
+
+    ego_samples [N, T, 2] and candidates [K, T, 2] cover the same steps after
+    the generation step; ``*_start`` are (position, heading) at that step and
+    the sizes CAT's {"w", "l"} dicts. Footprints are covered by
+    ``n_circles`` circles (geometry.collision_cost_matrix), headings follow
+    the paths (path_headings)."""
+    f = torch.float32
+    h = min(horizon, ego_samples.shape[1], candidates.shape[1])
+
+    def boxes(trajs, start, size):
+        trajs = np.asarray(trajs, dtype=np.float64)[:, :h, :2]
+        heading = path_headings(trajs, start[0], start[1])
+        n = len(trajs)
+        return BoxTrajectories(pos=torch.as_tensor(trajs, dtype=f), heading=torch.as_tensor(heading, dtype=f),
+                               valid=torch.ones(n, h, dtype=torch.bool),
+                               length=torch.full((n,), float(size["l"]), dtype=f),
+                               width=torch.full((n,), float(size["w"]), dtype=f))
+
+    cost = collision_cost_matrix(boxes(ego_samples, ego_start, ego_size), boxes(candidates, adv_start, adv_size),
+                                 n_circles=n_circles)
+    hits = (cost > 0).numpy()
+    return 1.0 - hits.mean(axis=0), hits
+
+
 def select(rule: str, score: np.ndarray, min_dist: np.ndarray, beta: Optional[np.ndarray],
            threshold: float = 1.0, penalty: float = 1.0) -> Tuple[int, str]:
     """The chosen candidate and why."""
@@ -167,6 +227,12 @@ def make_adv_generator(parser):
 
         return AdvGenerator(parser)
     return ResponsibleAdvGenerator(parser)
+
+
+def cat_adversary(scene: Scene) -> Optional[int]:
+    """The adversary CAT uses: the object of interest other than the ego."""
+    others = [i for i in scene.objects_of_interest if i != scene.sdc]
+    return others[0] if others else None
 
 
 def _base():
@@ -248,6 +314,28 @@ class ResponsibleAdvGenerator(_base()):
             out[f"chosen_{other}"] = select(other, score, min_dist, beta, self.args.resp_threshold,
                                             self.args.resp_penalty)[0]
         return out
+
+    def avoidability(self, scene: Scene, candidates: np.ndarray, ov_size: Dict, av_size: Dict,
+                     seed: int = 0) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Ego avoidability [K] of the candidates, from the ego's DenseTNT
+        motion set at the generation step (its own random stream, so the
+        adversary's samples -- and every other rule's choice -- are the same
+        with or without it), and the ego samples; all ones (no filtering)
+        when DenseTNT has no prediction for the ego there."""
+        step, ego = GENERATION_STEP, scene.sdc
+        adv = cat_adversary(scene)
+        dist = self.dtnt.distribution(scene, step, ego)
+        if dist is None or adv is None:
+            return np.ones(len(candidates)), None
+        generator = torch.Generator().manual_seed(seed * 7919 + 1)
+        _, _, samples = self.dtnt.sample(dist, self.cfg.n_safety_samples, generator=generator)
+        samples = samples.detach().cpu().numpy() if torch.is_tensor(samples) else np.asarray(samples)
+        avoid, _ = ego_avoidability(
+            samples, candidates,
+            (scene.position[ego, step, :2], float(scene.heading[ego, step])),
+            (scene.position[adv, step, :2], float(scene.heading[adv, step])),
+            av_size, ov_size, horizon=self.args.resp_horizon)
+        return avoid, samples
 
     def report(self) -> None:
         if not self.selections:
