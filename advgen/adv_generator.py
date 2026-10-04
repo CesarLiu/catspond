@@ -83,6 +83,38 @@ def get_polyline_vel(polyline):
     polyline_vel = diff / 0.1
     return polyline_vel
 
+class StepAlignedPlan(list):
+    """The adversary's plan (91 rows: x, y, vx, vy, yaw) as handed to the
+    traffic manager by set_adv_info, which applies one row per step with
+    pop(0) once it has spawned the adversary. Popping returns the row of the
+    current step (engine.episode_step - 1, the one-step lag of an adversary
+    spawned at reset) instead of the next row: an adversary that appears
+    later in the log -- or whose spawn is put off because it overlaps the
+    ego -- would otherwise start at the plan's first row, the zero padding of
+    the steps before it existed, sit at the origin for as many steps and
+    follow the rest of its plan as many steps late. For an adversary spawned
+    at reset nothing changes. As a list it still holds the whole plan.
+
+    Rows of history steps the log has no state for (zeros: before the
+    adversary appears, or a gap) hold it at the nearest logged state,
+    instead of putting it at the origin."""
+
+    def __init__(self, rows, env):
+        rows = np.array(rows, dtype=float)
+        pad = np.all(rows[:, :2] == 0, axis=-1)
+        if pad.any() and not pad.all():
+            source = np.where(pad, 0, np.arange(len(rows)))
+            np.maximum.accumulate(source, out=source)  # the last logged row at or before each step
+            source[:np.argmax(~pad)] = np.argmax(~pad)  # before the first one: the first one
+            rows = rows[source]
+            rows[pad, 2:4] = 0.0  # held in place
+        super().__init__(rows)
+        self.env = env
+
+    def pop(self, index=-1):
+        return self[min(max(self.env.engine.episode_step - 1, 0), len(self) - 1)]
+
+
 ###   l1 [xa, ya, xb, yb]   l2 [xa, ya, xb, yb]
 def Intersect(l1, l2):
     v1 = (l1[0] - l2[0], l1[1] - l2[1])
@@ -133,6 +165,10 @@ class AdvGenerator():
         self.ego_prob = 1.
         self.adv_traj = []
         self.adv_name = None
+        # the traffic manager keeps its adversary until set_adv_info is called again, which
+        # normal episodes (eval_policy's first round) do not: clear it, or a plan left from
+        # an earlier episode drives any later vehicle of the same name
+        env.engine.traffic_manager.set_adv_info(None, [])
         if not self.storage.get(self.env.current_seed):
             traffic_motion_feat,adv_agent,ego_navigation_route,adv_past = self._parse()
             
@@ -507,7 +543,7 @@ class AdvGenerator():
         adv_pos = np.concatenate((adv_past,adv_future),axis=0)
         adv_yaw = get_polyline_yaw(adv_pos).reshape(-1,1)
         adv_vel = get_polyline_vel(adv_pos)
-        self.adv_traj = list(np.concatenate((adv_pos,adv_vel,adv_yaw),axis=1))
+        self.adv_traj = StepAlignedPlan(np.concatenate((adv_pos,adv_vel,adv_yaw),axis=1), self.env)
 
         return traffic_motion_feat,self.adv_traj,trajs_AV,any(res)
         

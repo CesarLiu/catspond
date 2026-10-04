@@ -123,3 +123,33 @@ def test_runs_are_named_by_their_selection():
     args = SimpleNamespace(adv_selection="fair", resp_threshold=1.0, resp_penalty=1.0, resp_avoid=0.3)
     assert selection_name(args) == "fair1_0.3"
     assert selection_name(SimpleNamespace(adv_selection="cat")) == "cat"
+
+
+def test_the_plan_is_applied_at_the_scene_step():
+    from types import SimpleNamespace
+
+    from advgen.adv_generator import StepAlignedPlan
+
+    rows = np.zeros((91, 5))
+    rows[:, 0] = np.arange(91)  # x = the plan's step
+    rows[:, 1] = 100.0  # (0, 0) would read as a row without a logged state
+    env = SimpleNamespace(engine=SimpleNamespace(episode_step=0))
+    plan = StepAlignedPlan(rows, env)
+    assert np.array(plan).shape == (91, 5)  # still the whole plan
+    # spawned at reset: the k-th env.step applies row k - 1, as CAT's manager did
+    applied = []
+    for k in range(1, 6):
+        env.engine.episode_step = k
+        applied.append(plan.pop(0)[0])
+    assert applied == [0, 1, 2, 3, 4]
+    # spawned at step 8 (it appears late in the log): its first pop is row 8, not row 0
+    env.engine.episode_step = 9
+    assert plan.pop(0)[0] == 8 and len(plan) == 91
+    env.engine.episode_step = 200  # past the end: the last row
+    assert plan.pop(0)[0] == 90
+    # history rows without a logged state (zeros) hold the nearest logged one
+    rows[:2] = 0.0  # appears at step 2
+    rows[5] = 0.0  # and is missing at step 5
+    held = np.array(StepAlignedPlan(rows, env))
+    assert held[:3, 0].tolist() == [2, 2, 2] and held[5, 0] == 4 and held[5, 2] == 0.0
+    assert held[6:, 0].tolist() == list(range(6, 91))

@@ -311,7 +311,7 @@ class ResponsibleAdvGenerator(_base()):
             self.storage[seed]["scene"] = scene
 
     def generate(self, mode="train"):
-        from advgen.adv_generator import get_polyline_vel, get_polyline_yaw
+        from advgen.adv_generator import StepAlignedPlan, get_polyline_vel, get_polyline_yaw
 
         st = self.storage[self.env.current_seed]
         if mode == "train":
@@ -321,8 +321,8 @@ class ResponsibleAdvGenerator(_base()):
         choice = self.choose(st["scene"], trajs_av, probs_av, st["adv_info"], st["ego_info"],
                              seed=int(self.env.current_seed))
         adv_pos = np.concatenate((st["adv_past"], choice["trajectory"]), axis=0)
-        self.adv_traj = list(np.concatenate(
-            (adv_pos, get_polyline_vel(adv_pos), get_polyline_yaw(adv_pos).reshape(-1, 1)), axis=1))
+        self.adv_traj = StepAlignedPlan(np.concatenate(
+            (adv_pos, get_polyline_vel(adv_pos), get_polyline_yaw(adv_pos).reshape(-1, 1)), axis=1), self.env)
         # scores only: candidates and samples of every episode would pile up over a training run
         self.selections.append({k: choice[k] for k in ("rule", "chosen", "why", "score", "min_dist", "beta", "avoid")})
         return st["traffic_motion_feat"], self.adv_traj, np.array(trajs_av), bool(np.any(choice["score"]))

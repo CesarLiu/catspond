@@ -332,6 +332,23 @@ i), and in adversarial episodes how far the adversary left its logged track
 and whether it follows its plan with a lag of 0 or 1 step. The recording
 logic is tested against a stand-in environment (`tests/responsibility/test_collect.py`).
 
+**A fix to CAT's adversary replay.** Once CAT's traffic manager has spawned
+the adversary, it applies the plan one row per step from its first row.
+That only lines up for an adversary present from step 0, which gets row
+k − 1 at step k. In 24 of the 500 scenes (8 of the test split) the
+adversary appears later in the log, at steps 1–10. The plan's first rows
+are zero padding for the steps before it existed, so the adversary sat at
+the origin for as many steps and then drove its plan as many steps late. A
+gap in its logged history did the same for one step. Both generators now
+hand over a `StepAlignedPlan` (`advgen/adv_generator.py`), which applies
+the row of the current step and holds the adversary at its nearest logged
+state where the log has none. `AdvGenerator.before_episode` also clears
+the manager's adversary: a plan left over from an earlier episode used to
+drive any later vehicle of the same name, for example in
+`eval_policy`'s normal episodes. For an adversary present from step 0
+nothing changes. With the fix, every adversary follows its plan exactly one
+step late (lag-1 error 0.00 m).
+
 ### Comparing policies: aggressive and timid, and whose fault the collisions were
 
 Responsibility has two directions. β_s > 0 is aggressive: the agent kept
