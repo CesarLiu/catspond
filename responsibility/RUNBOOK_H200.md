@@ -532,6 +532,8 @@ tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs
 
 ## 11. ⚠ UniTraj MTR：第二个预测模型（UNITRAJ_PLAN.md 的 U0、U2、U3、U5）
 
+> **暂停（2026-10-04）：** 第二个预测模型改用 CAT-K 的 SMART（`SMART_PLAN.md`），不需要训练。本节保留备用。
+
 目标：训练一个 Waymo 设定的 MTR（1.1 s 历史、8 s 未来、64 个意图点），用它重新计算责任，检查结论是否依赖预测模型。
 
 本地已完成并测试：
