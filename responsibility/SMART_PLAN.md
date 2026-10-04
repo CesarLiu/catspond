@@ -24,8 +24,8 @@ SMART 的反事实做法和 DenseTNT 很不一样：
 | 里程碑 | 内容 | 在哪里跑 |
 |---|---|---|
 | S0 环境 | catk 环境；载入两个检查点；跑 catk 自己的测试。**完成（2026-10-04）**：catk 自带的安装脚本装好了环境（为了不动系统，跳过了用 apt 装 ffmpeg 的那一步）；catk 的 163 个测试全部通过；两个检查点都能按它们自己的解码器配置载入到 GPU 上，各 7.0M 参数 | `~/venvs/catk` |
-| S1 导出 | `scripts/responsibility/export_catk.py`：把 `Scene`（logged 场景，或者从 rollout 重建的场景）转成 catk 的缓存格式 | catk 环境 |
-| S2 核对 | 导出的场景能被 catk 读入和 token 化；logged 轨迹的 token 化重建误差小；logged 运动在 SMART 下的 next-token NLL 处于正常范围；有条件的话，再与 catk 用原始 WOMD 转出的同一个场景逐字段对照 | catk 环境 |
+| S1 导出 | `scripts/responsibility/export_catk.py`：把 `Scene`（logged 场景，或者从 rollout 重建的场景）转成 catk 的缓存格式。**完成（2026-10-04）**：`responsibility/catk_export.py` 重建 catk 解码器那一段的输出（有 3 个单元测试），第二段直接调用 catk 自己的函数 | catk 环境 |
+| S2 核对 | **结构检查通过（2026-10-04，前 5 个场景）**，见下文。导出的场景能被 catk 读入和 token 化；logged 轨迹的 token 化重建误差小；logged 运动在 SMART 下的 next-token NLL 处于正常范围；有条件的话，再与 catk 用原始 WOMD 转出的同一个场景逐字段对照 | catk 环境 |
 | S3 计算 | 在 500 个场景上用 SMART 计算 SDC 和对手的责任 | catk 环境 |
 | S4 对照 | 把 catk 的结果转成本仓库的 `windows.csv`，用现有的 `compare_models.py` 与 DenseTNT 对照；之后对回放参照和策略的 rollout 也做一遍 | 本仓库环境 |
 
@@ -42,6 +42,12 @@ catk 的预处理分两段：
 - 信号灯：每一步的车道 id 和状态。
 
 场景 pickle 是纯字典和列表，不依赖 MetaDrive，Python 3.11 能直接读。
+
+### S2 的结果（catk 的 `verify_counterfactuals`，`clsft_E9`，场景 0–4）
+
+- **全部通过：** 强制回放复现 token 化的日志（误差 0.00 m；相对原始日志只差 token 量化，平均 2.8 cm）；用掩码移除一辆车，等于直接删掉它；批量计算等于逐个计算；`hidden` 模式确实堵住了信息泄漏，`logged` 模式确实会泄漏；滚动结果可以重放；打包计算等于逐对计算。
+- **场景 1 和 3 没通过一项"courtesy 能检测到邻车"：** KL 只有约 0.0002 nats。这项检查挑的是离得最近的一对车，在停车多的场景里就是两辆停着的车（速度都是 0.00 m/s）。停着的车的计划本来就不受旁边车的影响，所以 KL 接近 0 是正确的。这是检查挑车的方式造成的，不是导出的问题。
+- **还没做的：** logged 运动在 SMART 下的 NLL，与 catk 在 WOMD 验证集上的水平对比；与 catk 用原始 WOMD 转出的同一个场景逐字段对照（需要下载 WOMD）。
 
 ### S3 的设置：与 DenseTNT 的运行对齐
 
