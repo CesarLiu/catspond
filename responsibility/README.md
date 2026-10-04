@@ -442,6 +442,38 @@ RSS's), route completion and the timid and aggressive shares: the cross evaluati
 policies trained against different adversaries (and penalties), each tested
 without an adversary, with CAT's and with the fair one.
 
+#### The reference on the test split
+
+These are the logged egos replayed in MetaDrive on CAT's 100 test scenes,
+against each test adversary. The thresholds are calibrated on the run
+without an adversary.
+
+| test adversary | collisions (closed loop / offline prediction) | counterfactual ego / other / shared | rear-end rule decides, agrees | RSS decides, agrees | route completion |
+|---|---|---|---|---|---|
+| none | 0 | – | – | – | 95.8% |
+| CAT | 83 / 95% | 22 / 55 / 6 | 25 of 83, 16 of 23 | 42 of 83, 21 of 29 | 67.0% |
+| fair (2 m, ρ 0.1) | 16 / 25% | 9 / 6 / 1 | 0 of 16 | 6 of 16, 0 of 1 | 90.2% |
+| avoidability only (∞, ρ 0.5) | 38 / 49% | 12 / 21 / 5 | 11 of 38, 6 of 11 | 21 of 38, 6 of 12 | 85.3% |
+
+The "agrees" counts include only collisions where both the
+counterfactual verdict and the rule or RSS name a side (ego or other).
+
+The replayed ego cannot react, so a collision with CAT's adversary is the
+adversary's doing. The counterfactual verdict says so in two thirds of
+them: the adversary's median β is +1.02 m, the ego's +0.21 m. Where the
+rear-end rule or RSS decide, they agree with it about 70% of the time, but
+they decide only 30% and 51% of these collisions.
+
+The fair adversary's collisions come out balanced: median β +0.22 m for the
+adversary and +0.26 m for the ego. That is what it was built for: it
+drives no less acceptably than the ego.
+
+An unchanged ego trajectory scores 1.9× as many aggressive windows next to
+CAT's adversary as without one (19.0% against 10.1%), because β_s is
+measured against what the others actually do. Policies must therefore be
+compared under the same test adversary, which is what `comparison_seeds.md`'s
+matrices do.
+
 ### Training with a responsibility-weighted collision penalty
 
 In CAT's training environment a collision does not end the episode: at every
