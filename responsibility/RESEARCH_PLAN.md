@@ -18,7 +18,15 @@
 - 确认 MetaDrive 的仿真步长是 0.1 s，且 `log_AV_history` 记录的第 i 条对应场景的第 i 步（与 CAT 用 `ego_traj[11:91]` 的假设一致）。
 
 ### M3.1 🖥 策略 rollout 采集：`scripts/responsibility/collect_rollouts.py`（2–3 天）
-> **状态：** 脚本已写好，记录逻辑有不依赖 MetaDrive 的单元测试（`test_collect.py`）。待在服务器上跑 `replay` 验收，见 runbook 第 10a 步。
+> **状态：** 脚本已写好，记录逻辑有不依赖 MetaDrive 的单元测试（`test_collect.py`）。2026-10-04 在 L4 机器上抽样验收通过：
+> - 回放的自车与日志的误差是 0.000 m；
+> - CAT 的对手平均偏离日志 12.9 m，按计划晚一步执行（lag 1 误差 0.00 m）。
+>
+> 验收时发现并修复了两处问题：
+> - 记录器在场景里没有任何 logged 物体时会崩溃（提交 74766a3）；
+> - CAT 回放对手计划时会错位：对手在日志里出现得晚的话，会先被放到原点若干步（500 个场景里有 24 个，提交 0b94e88）。
+>
+> 测试集 100 个场景的完整参照 rollout 待重新采集（runbook 第 10a 步）。
 - **输入：** 策略，可以是 TD3 模型（`policy.load(models/<name>)`）或 `replay`（`ReplayEgoCarPolicy`，作为 logged 基线）；场景范围默认测试集 400–499，也可以是全部 500 个；对手模式 `none | cat | constrained | fair`（后两种沿用 `--adv_selection` 的参数）。
 - **每个回合记录：**
   - 场景号；
@@ -127,7 +135,7 @@
 - **验收：** 合成场景的单元测试：自车被追尾时 w 接近 0，自车切入他车道时 w 接近 1；再在方向 3 基线评测的真实碰撞上，与简单规则（追尾归后车）比较一致率。
 
 ### M2.2 🖥 训练集成：`cat_RLtrain.py --blame_weighting {none, share}`（2 天）
-> **状态：** 代码已完成（`responsibility/blame_reward.py`），用模拟训练环境的单元测试验证（`test_blame_reward.py`）；待在服务器上实跑。与计划有三处不同，都源于 CAT 训练环境的实际设置：
+> **状态：** 代码已完成（`responsibility/blame_reward.py`），用模拟训练环境的单元测试验证（`test_blame_reward.py`）。2026-10-04 在 L4 机器上的试点里实跑了前约 3.5 万步，`share` 和 `rss` 两种模式都正常：每次碰撞都被归因、加权并记录，没有失败。试点因为机器关机而中断，详见 runbook 9a。与计划有三处不同，都源于 CAT 训练环境的实际设置：
 > 1. 训练配置没有 `crash_vehicle_done`，碰撞**不会结束回合**。车辆接触期间的每一步，MetaDrive 都把奖励替换为 −`crash_vehicle_penalty`（默认 1）。所以加权的对象不是"终止 transition"，而是每次碰撞事件（与同一辆车连续接触的若干步）中所有被罚的步；每个事件在其第一步归因一次。
 > 2. 被罚步的奖励改为 w·(−P) + (1−w)·step_reward，而不是计划中的 r_T + (1−w)·P = −w·P。区别在于 w = 0 时，这一步保留被罚款替换掉的驾驶奖励（`info["step_reward"]`），等于"没有发生碰撞"。
 > 3. 风险缓解直接作为默认：只有判定为 `ego`/`other`（两侧差异 > `--blame_margin`，默认 0.1 m）时才用 w，否则 w = 1（保留全部惩罚）。因此 M2.1 中"两者都 ≤ 0 时 w = 0.5"在训练里不会用到。
