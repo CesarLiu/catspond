@@ -23,7 +23,7 @@ SMART 的反事实做法和 DenseTNT 很不一样：
 
 | 里程碑 | 内容 | 在哪里跑 |
 |---|---|---|
-| S0 环境 | catk 环境；载入两个检查点；跑 catk 自己的测试 | `~/venvs/catk` |
+| S0 环境 | catk 环境；载入两个检查点；跑 catk 自己的测试。**完成（2026-10-04）**：catk 自带的安装脚本装好了环境（为了不动系统，跳过了用 apt 装 ffmpeg 的那一步）；catk 的 163 个测试全部通过；两个检查点都能按它们自己的解码器配置载入到 GPU 上，各 7.0M 参数 | `~/venvs/catk` |
 | S1 导出 | `scripts/responsibility/export_catk.py`：把 `Scene`（logged 场景，或者从 rollout 重建的场景）转成 catk 的缓存格式 | catk 环境 |
 | S2 核对 | 导出的场景能被 catk 读入和 token 化；logged 轨迹的 token 化重建误差小；logged 运动在 SMART 下的 next-token NLL 处于正常范围；有条件的话，再与 catk 用原始 WOMD 转出的同一个场景逐字段对照 | catk 环境 |
 | S3 计算 | 在 500 个场景上用 SMART 计算 SDC 和对手的责任 | catk 环境 |
