@@ -262,24 +262,25 @@ python cat_advgen.py --adv_selection fair --resp_threshold $TAU --resp_avoid $RH
 | `cat_fairinf_0.5` | 只约束可避免性（τ = ∞，ρ = 0.5；β 的消融） | 原版 |
 | `cat_fair2_0.1_share` | 公平 | 按责任份额 |
 
-先在小机器上跑过一次试点（每组 1 个种子，2e5 步），用来确认整条流程能跑通，见 9a。
+先在小机器上跑过一次试点（每组 1 个种子，2e5 步），确认整条流程能跑通，见 9a。
+
+用脚本启动全部 21 个训练（7 组 × 3 个种子）：
 
 ```bash
-mkdir -p logs/rl
-export SDL_VIDEODRIVER=dummy
-g=0
-for seed in 0 1 2; do
-  for setting in "--mode replay" "--mode cat" "--mode cat --blame_weighting share" "--mode cat --blame_weighting rss" \
-                 "--mode cat $FAIR" "--mode cat $ABL" "--mode cat $FAIR --blame_weighting share"; do
-    name=$(echo "$setting" | tr -d ' -' )_s$seed
-    CUDA_VISIBLE_DEVICES=$((g % $(nvidia-smi -L | wc -l))) nohup python cat_RLtrain.py $setting --seed $seed --save_model \
-      > logs/rl/$name.log 2>&1 &
-    g=$((g+1))
-  done
-done
+DRY=1 bash scripts/responsibility/run_rl.sh                 # 先看会启动哪些训练、同时跑几个
+nohup bash scripts/responsibility/run_rl.sh > logs/run_rl.log 2>&1 &
 ```
 
-- 进度：`tail -f logs/rl/*.log`。
+脚本做的事：
+- 同时跑的训练数默认按可用内存（每个 4.5 GB）和核数算，可以用 `PARALLEL=…` 指定。多块 GPU 时轮流分配。
+- 默认加 `--no_store_map`。内存很大的机器可以设 `NO_STORE_MAP=0`，地图缓存更快，但每个训练会涨到 5 GB 以上。
+- 日志不缓冲，写到 `logs/rl/<名字>_s<种子>.log`。正常结束的训练会留下 `.done`，重跑脚本时跳过。
+- 资源监控写到 `logs/rl/resources.log`：内存低于 2 GB 时停掉最新启动的训练，磁盘低于 5 GB 时全部停掉。
+- 2026-10-04 在 L4 机器上用 3000 步试过 `cat_fairinf_0.5` 和 `replay`，都正常结束。
+
+时间：试点时每个训练约 30 步/s（5 个并行），1e6 步约 13 小时，再加上评测（默认每 2.5 万步一次）。
+
+- 进度：`tail -f logs/run_rl.log logs/rl/*.log`。
 - 曲线数据：`logs/<名字>_MDWaymo-seed<seed>/logger.csv`。各组的名字见上表，分开记录，不会互相覆盖。
 - 模型：`models/<名字>_s<seed>*`（加了 `--save_model` 才会保存；每个种子单独一份，第 10 步要用）。
 - `_share` 的两组每次碰撞多两次 DenseTNT 推理（GPU 上约 1–2 s），日志里每次碰撞有一行 `collision at step ... penalty weight ...`。`cat_rss` 不需要 DenseTNT，每次归因约 0.15 s。
@@ -411,6 +412,19 @@ done
 ## 10. ⚠ 策略的双向驾驶风格评测（方向 3，M3.0–M3.4）
 
 依赖第 8b 步保存的模型（`models/<名字>_s<seed>*`）。`replay` 基线不需要模型，可以先跑，顺便完成第 10a 步的核查。
+
+用脚本跑完 10a–10c，对 `models/` 里的每个模型和回放的 logged 驾驶都做一遍：
+
+```bash
+nohup bash scripts/responsibility/run_eval.sh > logs/run_eval.log 2>&1 &
+cat logs/responsibility/policies/compare/comparison_seeds.md      # 跑完后：按种子平均的表和矩阵
+```
+
+- 每个策略在测试集上面对四种测试对手：无、CAT、`fair2_0.1`、`fairinf_0.5`。
+- 计算责任和碰撞归因，在回放的无对手驾驶上拟合等级，最后输出对比表。
+- 每一步都可以续跑。同时跑的进程数默认按可用内存（每个 3 GB）和核数算，可以用 `PARALLEL=…` 指定。
+- 2026-10-04 在 L4 机器上用 2 个试点模型、3 个场景试过整个脚本。
+- 下面的 10a–10c 说明它做了什么，以及结果怎么读。
 
 ### 10a. 采集 rollout，并核查 CAT 的评测流程（M3.0、M3.1）
 

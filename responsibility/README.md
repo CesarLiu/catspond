@@ -561,6 +561,12 @@ Cython 0.29 passes every check:
 pip install "cython>=0.29.34,<3" && python scripts/responsibility/build_cython.py
 ```
 
+For the RL experiments, `scripts/responsibility/run_rl.sh` trains the
+seven settings × three seeds, and `scripts/responsibility/run_eval.sh`
+then evaluates every model and the replayed log against the four test
+adversaries and writes the comparison tables. The runbook's steps 8b and
+10 describe both.
+
 `run_h200.sh` starts `SHARDS` (16) processes per agent, spread over the
 visible GPUs, each taking every SHARDS-th scene (`--num-shards/--shard-index`)
 and writing its own `windows.shard-<i>-of-<n>.csv`; logs are in
