@@ -102,7 +102,17 @@ def adv_mode_name(args) -> str:
 
 def play(env, state, act, recorder, generator=None, max_steps=0):
     """One episode from the reset that returned ``state``; returns the last
-    step's info."""
+    step's info.
+
+    A collision is read from ``ego_crash_flag``, which MetaDrive's collision
+    check sets alongside ``crash_vehicle`` and nothing clears. For a replayed
+    ego (--policy replay) ``crash_vehicle`` never reaches ``info``: the agent
+    manager moves a replay policy's vehicle to its next logged pose after the
+    collision check and calls its ``before_step``, which clears the step's
+    flags, so crash_vehicle_done never ends the episode. CAT's cat_advgen.py
+    counts attacks by this flag for the same reason. The episode then ends
+    at the collision, as crash_vehicle_done does for a driven ego."""
+    env.vehicle.ego_crash_flag = False
     recorder.record()
     info, steps = {}, 0
     while True:
@@ -111,6 +121,8 @@ def play(env, state, act, recorder, generator=None, max_steps=0):
         state, _, done, info = env.step(act(state))
         recorder.record()
         steps += 1
+        if getattr(env.vehicle, "ego_crash_flag", False) and not info.get("crash_vehicle"):
+            info, done = dict(info, crash_vehicle=True), True
         if done or (max_steps and steps >= max_steps):
             return info
 
@@ -226,7 +238,6 @@ def main():
         # the adversarial episode (second round), with the ego's trajectory from the first
         if generator is not None:
             state = env.reset(force_seed=seed)
-            env.vehicle.ego_crash_flag = False
             generator.before_episode(env)
             generator.generate(mode="eval")
             planned = np.array(generator.adv_traj, dtype=np.float64)  # the traffic manager consumes the list

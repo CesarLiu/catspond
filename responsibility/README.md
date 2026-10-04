@@ -332,6 +332,17 @@ i), and in adversarial episodes how far the adversary left its logged track
 and whether it follows its plan with a lag of 0 or 1 step. The recording
 logic is tested against a stand-in environment (`tests/responsibility/test_collect.py`).
 
+**Collisions of a replayed ego.** MetaDrive's agent manager moves a
+replay policy's vehicle to its next logged pose after the collision check,
+and the vehicle's `before_step` then clears that step's flags. So
+`crash_vehicle` never reaches `info`, and `crash_vehicle_done` never ends
+the episode. `collect_rollouts` therefore reads collisions from
+`ego_crash_flag`, which is set by the same check and never cleared; CAT's
+`cat_advgen.py` counts attacks by it for the same reason. The episode then
+ends at the collision, as it would for a driven ego. Before this fix the
+replay reference had no collision at all, although ego and adversary boxes
+overlapped in 86 of CAT's 100 test episodes.
+
 **A fix to CAT's adversary replay.** Once CAT's traffic manager has spawned
 the adversary, it applies the plan one row per step from its first row.
 That only lines up for an adversary present from step 0, which gets row

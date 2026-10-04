@@ -397,6 +397,7 @@ python -m scripts.responsibility.collect_rollouts --policy replay --adversary $A
 - `replay: max ego error ... m`：应 < 0.1 m。这同时确认了 rollout 的第 i 个状态对应场景的第 i 步。如果误差很大，先停下来告诉我。
 - `adversary: X m off its log`：X 应明显大于 0。如果接近 0，说明对手轨迹没有生效。代码层面已经确认 `eval_policy` 用全局 `env` 没有问题（`env.engine` 是全局单例），这里是实测确认。
 - `plan error lag 0 / lag 1`：对手实际位置与计划轨迹的偏差。预期 lag 1 接近 0，也就是对手比计划晚一步执行。rollout 记录的是实际位置，所以不影响责任的计算，只作记录。
+- 回放的自车不会报 `crash_vehicle`：MetaDrive 在碰撞检查之后又调用了回放车辆的 `before_step`，把当步的标志清掉了。所以 `collect_rollouts` 改为读 `ego_crash_flag`，CAT 的 `cat_advgen.py` 也是这么做的（提交见下）。在这之前采集的回放 rollout 里一次碰撞都没有，要重新采集。
 - 2026-10-04 修复了 CAT 回放对手计划的一个错位（提交 0b94e88，见 README）：对手在日志里出现得晚的场景，原来会被放到原点若干步，然后整段计划都晚执行。这类场景在 500 个里有 24 个，测试集里有 8 个。修复前采集的对抗 rollout 要重新采集。
 
 再采集训练好的策略：21 个模型（第 8b 步的 7 组 × 3 个种子），每个模型在三种测试对手下各跑一次：

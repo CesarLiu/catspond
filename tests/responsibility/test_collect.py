@@ -70,6 +70,26 @@ def test_a_normal_episode_is_recorded_step_by_step():
     assert col.replay_error(env, rollout) == pytest.approx(0.0)
 
 
+def test_a_replayed_egos_collision_ends_the_episode():
+    # MetaDrive clears a replayed ego's crash_vehicle within the step; only ego_crash_flag stays
+    env = FakeEnv(crash_at=99)
+    step = env.step
+
+    def replayed_step(action):
+        out = step(action)
+        if env.t == 12:
+            env.vehicle.ego_crash_flag = True
+        return out
+
+    env.step = replayed_step
+    env.vehicle.ego_crash_flag = True  # left over from an earlier episode: play resets it
+    recorder = col.Recorder(env)
+    info = col.play(env, None, lambda s: [0, 0], recorder)
+    rollout = recorder.rollout("401", "abc", "replay", "cat", info)
+    assert rollout["end"]["step"] == 12 and rollout["end"]["reason"] == "crash_vehicle"
+    assert rollout["end"]["crash_with"] == "5"
+
+
 def test_an_episode_without_logged_objects():
     env = FakeEnv(crash_at=99)
     recorder = col.Recorder(env)
