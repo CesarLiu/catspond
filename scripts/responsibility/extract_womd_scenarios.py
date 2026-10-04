@@ -53,12 +53,15 @@ def scenario_id(data: bytes):
 
 def records(path):
     """(raw framed record, data) of every record in a tfrecord file."""
+    size = Path(path).stat().st_size
     with open(path, "rb") as f:
         while True:
             head = f.read(12)
             if len(head) < 12:
                 return
             (length,) = struct.unpack("<Q", head[:8])
+            if length > size - f.tell():
+                raise ValueError(f"{path} is not a tfrecord file (record length {length} beyond its end)")
             data = f.read(length)
             tail = f.read(4)
             yield head + data + tail, data
@@ -71,10 +74,13 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     wanted = {line.strip() for line in open(args.ids) if line.strip() and not line.startswith("#")}
+    out_path = Path(args.out).expanduser().resolve()
     files = []
     for item in args.inputs:
         item = Path(item).expanduser()
-        files += sorted(x for x in item.iterdir() if x.is_file()) if item.is_dir() else [item]
+        # in a directory, only tfrecord files, and never the output being written
+        files += (sorted(x for x in item.iterdir() if x.is_file() and "tfrecord" in x.name and x.resolve() != out_path)
+                  if item.is_dir() else [item])
     found = set()
     with open(args.out, "wb") as out:
         for i, path in enumerate(files, 1):
