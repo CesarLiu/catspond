@@ -63,7 +63,7 @@ class Recorder:
         """The rollout of the first ``n`` recorded states."""
         present = self.present[:n]
         ids = sorted(set().union(*present))
-        mask = np.array([[sid in step for step in present] for sid in ids], dtype=bool).reshape(len(ids), -1)
+        mask = np.array([[sid in step for step in present] for sid in ids], dtype=bool).reshape(len(ids), len(present))
         ego = self._track(self.ego[:n])
         size = self.env.vehicle
         ego["size"] = (float(size.top_down_length), float(size.top_down_width))

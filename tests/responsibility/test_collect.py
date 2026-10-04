@@ -70,6 +70,15 @@ def test_a_normal_episode_is_recorded_step_by_step():
     assert col.replay_error(env, rollout) == pytest.approx(0.0)
 
 
+def test_an_episode_without_logged_objects():
+    env = FakeEnv(crash_at=99)
+    recorder = col.Recorder(env)
+    info = col.play(env, None, lambda s: [0, 0], recorder, max_steps=2)  # ends before car "5" appears
+    rollout = recorder.rollout("401", "abc", "td3", "none", info)
+    check_rollout(rollout)
+    assert rollout["present"]["track_ids"] == [] and rollout["present"]["mask"].shape == (0, 3)
+
+
 def test_the_adversary_and_its_lag_are_recorded():
     plan = np.zeros((91, 5))
     plan[:, 0] = np.arange(91)
