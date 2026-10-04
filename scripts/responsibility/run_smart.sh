@@ -13,6 +13,7 @@
 # usage (from this repository's root; catk installed by its install/setup_server.sh):
 #   bash scripts/responsibility/run_smart.sh
 #   ROLLOUTS=rollouts/replay/cat OUT=logs/catk/replay_cat bash scripts/responsibility/run_smart.sh
+#   EXPORT=0 OUT=logs/catk/v121 bash scripts/responsibility/run_smart.sh   # cache from cache_womd_for_cat.py
 #
 # variables (defaults):
 #   CATK_ROOT   the catk checkout                                     ($HOME/catk)
@@ -24,6 +25,7 @@
 #   SHARDS      processes (each with its own GPU batches)              (1)
 #   BATCH       scene copies per model call; 128 ran out of the L4's 22 GB with
 #               the exact courtesy in a 61-agent scene, 32 peaked at 6.3 GB   (32)
+#   EXPORT      1: export SCENES/ROLLOUTS into OUT/cache first; 0: use OUT/cache as it is  (1)
 #   EXTRA       further catk compute_responsibility flags              ("")
 # Re-running resumes: exported scenes and finished scenarios are skipped.
 set -euo pipefail
@@ -36,18 +38,21 @@ ROLLOUTS=${ROLLOUTS:-}
 OUT=${OUT:-logs/catk/scenes}
 SHARDS=${SHARDS:-1}
 BATCH=${BATCH:-32}
+EXPORT=${EXPORT:-1}
 read -r -a EXTRA_ARGS <<< "${EXTRA:-}"
 export TF_CPP_MIN_LOG_LEVEL=3 PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 repo=$(pwd)
 out=$(realpath -m "$OUT")
 mkdir -p "$out/logs"
-echo "$(date '+%m-%d %H:%M') export to $out/cache"
-src=(--scenes "$SCENES")
-[ -n "$ROLLOUTS" ] && src+=(--rollouts "$ROLLOUTS")
-"$PYTHON" -m scripts.responsibility.export_catk --catk-root "$CATK_ROOT" "${src[@]}" --out-dir "$out" \
-  > "$out/logs/export.log" 2>&1
-tail -n 1 "$out/logs/export.log"
+if [ "$EXPORT" = 1 ]; then
+  echo "$(date '+%m-%d %H:%M') export to $out/cache"
+  src=(--scenes "$SCENES")
+  [ -n "$ROLLOUTS" ] && src+=(--rollouts "$ROLLOUTS")
+  "$PYTHON" -m scripts.responsibility.export_catk --catk-root "$CATK_ROOT" "${src[@]}" --out-dir "$out" \
+    > "$out/logs/export.log" 2>&1
+  tail -n 1 "$out/logs/export.log"
+fi
 
 echo "$(date '+%m-%d %H:%M') responsibility with $(basename "$CKPT"), $SHARDS process(es)"
 cd "$CATK_ROOT"

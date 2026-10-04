@@ -9,8 +9,9 @@ ids and runs catk's own preprocessing on every hit -- the body of catk's
 src/data_preprocess.py wm2argo, unchanged -- writing OUT/cache/<scene>.pkl
 (scenario id inside: the CAT scene's file stem, as export_catk.py does) and
 OUT/index.json. Scenes CAT duplicated get a file each. Reports which
-scenarios were not found, and which were found in another shard than CAT's
-v1.1 file named.
+scenarios were not found, and, when reading WOMD's own shards, which were
+found in another shard than CAT's v1.1 file named. The tfrecords may also
+be one file of just CAT's scenarios (extract_womd_scenarios.py).
 
 Runs in catk's environment (TensorFlow and the WOMD protos). Example:
     ~/venvs/catk/bin/python -m scripts.responsibility.cache_womd_for_cat --catk-root ~/catk \\
@@ -79,7 +80,8 @@ def main(argv=None):
                     pickle.dump(data, h)
                 os.replace(tmp, out / "cache" / f"{stem}.pkl")
             index[sid] = {"scenes": targets[sid], "file": record.name, "agents": int(data["agent"]["num_nodes"])}
-            if expected[sid] and expected[sid] != shard:
+            # only meaningful for WOMD's own shard files, not an extract (extract_womd_scenarios.py)
+            if "-of-" in shard and expected[sid] and expected[sid] != shard:
                 moved.append((sid, expected[sid], shard))
         print(f"{record.name}: {sum(1 for v in index.values() if v['file'] == record.name)} CAT scenarios", flush=True)
 

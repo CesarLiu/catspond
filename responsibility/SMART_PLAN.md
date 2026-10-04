@@ -52,7 +52,12 @@ catk 的预处理分两段：
   - **地图：** v1.2 新增了车道入口（driveway），每个场景 290–480 个 token，CAT 的场景里一个都没有；v1.2.1 还重新处理了地图：场景 21 的地图 id，v1.2.1 有 276 个，CAT 的有 214 个，共有的只有 165 个，而且共有的车道点也不同。场景 84、225、275 的车道、路沿、道路线 token 大多在 0.5 m 以内对得上。
   - **角色：** interactive 划分只预测那两个交互的 agent，v1.2.1 的标准划分预测更多。
   - **信号灯：** 随着地图重处理，车道 id 和状态都变了；导出的信号灯状态与 CAT 的源文件一致。
-- **对 S4 的含义：** DenseTNT 和 SMART 看到的是同一份 CAT 源数据，所以对照是公平的。但 SMART 是在带车道入口的 v1.2.1 地图上训练的，CAT 的地图里没有车道入口，对 SMART 是一处轻微的分布偏移，写进局限。如果要消除它，需要按这 497 个 scenario id 下载 WOMD v1.2.1 的 interactive 数据，重建场景。
+- **对 S4 的含义：** DenseTNT 和 SMART 看到的是同一份 CAT 源数据，所以对照是公平的。但 SMART 是在带车道入口的 v1.2.1 地图上训练的，CAT 的地图里没有车道入口，对 SMART 是一处轻微的分布偏移，写进局限。
+- **v1.2.1 原生缓存（2026-10-04）：** 为了量出这处偏移有多大，又按 CAT 的 497 个 scenario id 从 WOMD v1.2.1 的 validation_interactive（150 个分片）里取出原始场景：
+  - `scripts/responsibility/extract_womd_scenarios.py` 不依赖 TensorFlow，在存数据的机器上运行，只拷贝这 497 条记录，得到一个 430 MB 的 tfrecord；
+  - `scripts/responsibility/cache_womd_for_cat.py` 再用 catk 自己的预处理生成缓存，在 `logs/catk/v121`：**497 个全部找到，对应 CAT 的 500 个场景**（有 3 个场景 CAT 重复用了）。agent 数中位数是 21，范围 2–129；
+  - v1.2.1 重新分配了场景所在的分片：服务器上原有的 14 个分片里只有 47 个 CAT 场景。
+  - S3 在 v1.1 导出上的运行结束后，同样的设置在这份缓存上再跑一遍（`EXPORT=0 OUT=logs/catk/v121 bash scripts/responsibility/run_smart.sh`）。两次运行的差别就是数据版本（车道入口、重处理的地图、重新编号的 agent）对 SMART 结果的影响。
 - **还没做的：** logged 运动在 SMART 下的 NLL，与 catk 在 WOMD 验证集上的水平对比。
 
 ### S3 的设置：与 DenseTNT 的运行对齐
