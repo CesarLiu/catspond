@@ -156,19 +156,23 @@ python -m scripts.responsibility.fit_levels --runs logs/responsibility/sdc logs/
     --fit-runs logs/responsibility/sdc --out-dir logs/responsibility/levels_policy
 ```
 
-On 20 logged scenes (self-driving car, 1 s windows) it finds 4 levels:
+On all 500 scenes (the self-driving car and CAT's adversary as logged, 0.5 s
+windows, fitted together) BIC chooses 7 levels:
 
-| level | β_s (m) | β_c (nats) | share | elevated in |
+| level | β_s (m) | β_c (nats) | share sdc / adv | elevated in |
 |---|---|---|---|---|
-| 0 | 0.00 | 0.02 | 51% | – (calm) |
-| 1 | 0.01 | 0.16 | 19% | – (mild courtesy, below half a spread) |
-| 2 | 0.44 | 0.12 | 23% | safety: margin given up |
-| 3 | 0.05 | 0.80 | 7% | courtesy: others' plans changed |
+| 0 | 0.00 | 0.01 | 36% / 38% | – (calm) |
+| 1 | 0.00 | 0.02 | 1% / 2% | – |
+| 2 | 0.01 | 0.09 | 18% / 18% | – |
+| 3 | 0.01 | 0.27 | 16% / 14% | courtesy |
+| 4 | 0.44 | 0.08 | 15% / 19% | safety: margin given up |
+| 5 | 0.01 | 0.82 | 8% / 5% | courtesy: others' plans changed |
+| 6 | 0.39 | 0.59 | 7% / 5% | both |
 
 The levels separate *kinds* of aggressiveness rather than forming one
 ranking, so every level that stands out from the calmest one by more than
 half a spread (the feature's standard deviation over the fitted windows) in
-safety or in courtesy counts as aggressive (here levels 2 and 3;
+safety or in courtesy counts as aggressive (here levels 3 to 6;
 `--aggressive-levels K` takes the top K instead), and a scene counts when at
 least `--scene-share` (50%) of its windows are. Because levels are relative to the fitted population, the
 informative output is the comparison between runs: each run's share of
@@ -227,28 +231,32 @@ It reports, per rule:
 - the share of scenes with an *unavoidable* collision (avoidability < 0.1).
 
 It also reports the logged adversaries' own responsibility and avoidability,
-to calibrate `--resp_threshold` (τ) and `--resp_avoid` (ρ) on. On the first
-20 scenes:
+to calibrate `--resp_threshold` (τ) and `--resp_avoid` (ρ) on. On all 500
+scenes (τ = ∞ keeps every candidate, so `fair` at τ = ∞ constrains
+avoidability alone: the ablation of β):
 
 | rule | predicted collision | adversary β mean / median | ego avoidability | unavoidable collisions |
 |---|---|---|---|---|
-| `cat` | 95% | +3.96 / +3.40 m | 0.29 | 30% |
-| `penalized` (1 m) | 95% | +2.81 / +1.59 m | 0.39 | 20% |
-| `constrained` 2 m | 50% | +0.98 / +1.00 m | 0.62 | 10% |
-| `constrained` 1 m | 30% | +0.51 / +0.56 m | 0.58 | 5% |
-| `constrained` 0.5 m | 15% | +0.10 / +0.06 m | 0.79 | 0% |
-| `fair` 2 m, ρ 0.3 | 40% | +0.74 / +0.83 m | 0.81 | 0% |
-| `fair` 1 m, ρ 0.3 | 25% | +0.34 / +0.24 m | 0.81 | 0% |
-| `fair` 1 m, ρ 0.5 | 15% | +0.23 / +0.06 m | 0.89 | 0% |
-| logged adversaries | – | median 0.00, q90 +0.35 m | median 0.95, q10 0.61, min 0.28 | – |
+| `cat` | 95% | +5.00 / +5.14 m | 0.30 | 40% |
+| `penalized` (1 m) | 95% | +3.98 / +3.96 m | 0.39 | 26% |
+| `constrained` 2 m | 33% | +1.01 / +1.18 m | 0.65 | 14% |
+| `constrained` 1 m | 24% | +0.32 / +0.29 m | 0.71 | 10% |
+| `constrained` 0.5 m | 18% | +0.01 / +0.00 m | 0.77 | 6% |
+| `fair` 2 m, ρ 0.1 | 25% | +0.87 / +1.05 m | 0.73 | 0.4% |
+| `fair` 2 m, ρ 0.3 | 21% | +0.78 / +0.96 m | 0.79 | 0.4% |
+| `fair` 1 m, ρ 0.3 | 15% | +0.17 / +0.12 m | 0.82 | 0.4% |
+| `fair` ∞, ρ 0.3 (avoidability only) | 63% | +3.86 / +3.55 m | 0.62 | 0.4% |
+| `fair` ∞, ρ 0.5 (avoidability only) | 49% | +3.39 / +3.03 m | 0.75 | 0.4% |
+| logged adversaries | – | median −0.05, q90 +0.23 m | median 0.97, q10 0.52 | 2% (avoidability < 0.1) |
 
 CAT's adversaries give up metres of margin their own alternatives would have
-kept, far beyond anything the logged adversaries do. In almost a third of the
-scenes they produce a crash that no plausible ego motion escapes, while every
-logged adversary leaves the ego a way out (avoidability at least 0.28).
-Bounding the adversary's responsibility removes most of those crashes, and
-`fair` removes all of them. Each constraint costs attack success; the
-collisions that remain are the ones the ego can and has to handle.
+kept: a mean of 5 m, against a q90 of 0.23 m for the logged adversaries.
+In 40% of the scenes they produce a crash that no plausible ego motion
+escapes, against 2% of the logged adversaries. Bounding the adversary's
+responsibility removes most of those crashes, and `fair` all but 2 scenes
+(0.4%: no candidate there is avoidable enough). Each constraint costs attack
+success; the collisions that remain are the ones the ego can and has to
+handle.
 
 `--plot tradeoff.png` draws this trade-off: predicted collision rate
 against the chosen adversaries' mean β, and against the share of
@@ -256,13 +264,17 @@ unavoidable collisions, one curve over τ for `constrained` and for `fair` at
 each ρ. The summary ends with the `fair` settings recommended for RL. A
 setting must keep a predicted collision rate of `--min-collision` (30%);
 among those, the ones with the fewest unavoidable collisions come first,
-then the ones whose adversary is least responsible. On the first 20 scenes
-(τ ∈ {0.25, 0.5, 1, 2} m, ρ ∈ {0.1, 0.3, 0.5}), `fair` has no unavoidable
-collision anywhere. Only τ = 2 m keeps 30% (ρ 0.5: 30%, ρ 0.3 and 0.1:
-40%). At the logged adversaries' q90 (τ ≈ 0.35 m), every rule stays at
-10–15%. A fair adversary that is as responsible as logged drivers rarely
-produces a collision against the logged ego, so the attack rate and a
-realistic τ have to be traded off. The 500-scene run decides.
+then the ones whose adversary is least responsible.
+
+On 500 scenes no finite τ up to 2 m reaches 30%. `fair` peaks at 25% (τ 2 m,
+ρ 0.1), and at the logged adversaries' q90 (τ ≈ 0.25 m) every rule stays at
+8–16%. A fair adversary that is as responsible as logged drivers rarely
+produces a collision against the logged ego. Avoidability alone (τ = ∞)
+keeps 49–78% collisions with almost no unavoidable ones, so the
+recommendation falls on it, but those adversaries are about as
+irresponsible as CAT's (β +3.4 to +4.4 m). Avoidability makes a collision
+solvable; β makes the adversary drive like people do. Which of the two
+training needs is what the RL experiments have to show.
 It also checks that the `cat` rule reproduces `AdvGenerator.generate` exactly
 (CAT's own code run on the same candidates), and it runs the drop-in
 generator the way CAT's scripts call it. Candidates are the adversary
