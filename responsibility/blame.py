@@ -24,11 +24,12 @@ The rule baseline (``rear_end_rule``) is the traffic-law reading of the
 most common collision: in a rear-end collision the follower is at fault.
 It applies when both travel the same way (headings within 30 degrees) and
 they meet end to end rather than side by side, and says nothing otherwise.
-The counterfactual verdict is compared against it where both give one.
+The counterfactual verdict is compared against it where both give one, and
+against RSS (responsibility/rss.py), the formal rule-based baseline.
 """
 
 from dataclasses import asdict, dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -121,17 +122,29 @@ def rear_end_rule(scene: Scene, ego: int, other: int, crash_step: int) -> str:
     return "ego" if lon > 0 else "other"
 
 
-def rollout_blame(model, scene: Scene, rollout: Dict, cfg: Optional[ResponsibilityConfig] = None,
-                  lookback: int = LOOKBACK, margin: float = MARGIN) -> Optional[Blame]:
-    """crash_blame for a rollout that ended in a vehicle collision, in the
-    scene rebuilt from it (rollouts.scene_from_rollout): the ego's collision
-    at the last recorded step with the recorded partner (``crash_with``,
-    else the closest agent); None after the end of the log."""
+def rollout_collision(scene: Scene, rollout: Dict) -> Optional[Tuple[int, int]]:
+    """(step, partner) of a rollout's vehicle collision, in the scene rebuilt
+    from it (rollouts.scene_from_rollout): the last recorded step and the
+    recorded partner (``crash_with``, else the agent closest to the ego);
+    None after the end of the log or with nobody there."""
     step = rollout["end"]["step"]
     if step >= scene.n_steps:  # nothing logged left to collide with
         return None
     with_id = rollout["end"].get("crash_with")
     other = scene.index(with_id) if with_id is not None and str(with_id) in scene.track_ids else None
+    if other is None:
+        other = crash_partner(scene, scene.sdc, step)
+    return None if other is None else (step, other)
+
+
+def rollout_blame(model, scene: Scene, rollout: Dict, cfg: Optional[ResponsibilityConfig] = None,
+                  lookback: int = LOOKBACK, margin: float = MARGIN) -> Optional[Blame]:
+    """crash_blame for the collision a rollout ended in (rollout_collision);
+    None after the end of the log."""
+    collision = rollout_collision(scene, rollout)
+    if collision is None:
+        return None
+    step, other = collision
     return crash_blame(model, scene, scene.sdc, step, other, cfg, lookback, margin)
 
 

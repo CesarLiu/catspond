@@ -84,8 +84,9 @@ if __name__ == "__main__":
 						 help='Choose a mode (replay, cat)', default='cat')
 
 	# responsibility-weighted collision penalty (responsibility/blame_reward.py)
-	parser.add_argument('--blame_weighting', choices=['none','share'], default='none',
-						help="share: the ego keeps only its share of each collision's penalty")
+	parser.add_argument('--blame_weighting', choices=['none','share','rss'], default='none',
+						help="share: the ego keeps only its share of each collision's penalty; "
+							 "rss: none of it when RSS blames the other alone (rule-based baseline)")
 	parser.add_argument('--blame_margin', type=float, default=MARGIN,
 						help='m; the share is used only when the two sides differ by more (else the full penalty)')
 	parser.add_argument('--blame_device', default=None, help='DenseTNT device for the attribution (default: cuda if available)')
@@ -98,8 +99,8 @@ if __name__ == "__main__":
 	if args.mode == 'cat' and args.adv_selection != 'cat':  # responsibility-constrained adversary
 		file_name += "_" + selection_name(args)  # e.g. cat_constrained1, cat_fair1_0.3
 	if args.blame_weighting != 'none':
-		file_name += "_" + args.blame_weighting  # e.g. cat_share, cat_fair1_0.3_share
-		if args.blame_margin != MARGIN:
+		file_name += "_" + args.blame_weighting  # e.g. cat_share, cat_fair1_0.3_share, cat_rss
+		if args.blame_weighting == 'share' and args.blame_margin != MARGIN:
 			file_name += f"{args.blame_margin:g}"
 	model_name = f"{file_name}_s{args.seed}"  # per seed: runs with several seeds must not share one model file
 	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
@@ -175,11 +176,12 @@ if __name__ == "__main__":
 		from responsibility.blame_reward import BlameWeighting
 
 		dtnt = getattr(adv_generator, "dtnt", None)  # the responsibility-constrained generators load one
-		if dtnt is None:
+		if dtnt is None and args.blame_weighting == 'share':  # rss needs no motion model
 			from responsibility.densetnt import DenseTNT
 			dtnt = DenseTNT(device=args.blame_device or ("cuda" if torch.cuda.is_available() else "cpu"))
 		weighting = BlameWeighting(dtnt, config_train["data_directory"], env.config["crash_vehicle_penalty"],
-								   margin=args.blame_margin, log_path=f"./logs/blame/{model_name}.csv")
+								   margin=args.blame_margin, log_path=f"./logs/blame/{model_name}.csv",
+								   mode=args.blame_weighting)
 
 	state, done = env.reset(), False
 	adv_generator.before_episode(env)

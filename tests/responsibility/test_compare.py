@@ -12,7 +12,7 @@ from scripts.responsibility import compare_policies as cmp
 WINDOW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
                  "n_neighbours", "safety_against", "courtesy_toward"]
 CRASH_FIELDS = ["scene", "policy", "adv_mode", "crash_step", "window", "other_id", "other_type", "adversary",
-                "beta_ego", "beta_other", "share", "verdict", "rule"]
+                "beta_ego", "beta_other", "share", "verdict", "rule", "rss", "rss_case"]
 
 
 def _rollouts(directory, policy, mode, ends):
@@ -42,10 +42,11 @@ def _run(tmp_path, name, policy, mode, ends, windows, crashes=()):
         with open(run / "crashes.csv", "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CRASH_FIELDS)
             writer.writeheader()
-            for scene, verdict, rule in crashes:
+            for scene, verdict, rule, *rss in crashes:
                 writer.writerow(dict(scene=scene, policy=policy, adv_mode=mode, crash_step=29, window=10,
                                      other_id="1", other_type="VEHICLE", adversary=0, beta_ego=1.0,
-                                     beta_other=0.0, share=1.0, verdict=verdict, rule=rule))
+                                     beta_other=0.0, share=1.0, verdict=verdict, rule=rule,
+                                     rss=rss[0] if rss else "n/a", rss_case=""))
     return run
 
 
@@ -57,11 +58,12 @@ def test_policies_are_compared_against_the_replayed_log(tmp_path, capsys):
     timid = [("0", 10 + i, 5.0 if i % 2 else 0.0, -3.0, 0.0) for i in range(10)]
     slow = _run(tmp_path, "slow", "td3", "none", [("max_step", 0.4), ("max_step", 0.6)], timid)
     # an aggressive policy: gives up margin and crashes, once at fault; the
-    # rear-end rule agrees on one collision, disagrees on one, is silent on one
+    # rear-end rule agrees on one collision, disagrees on one, is silent on one;
+    # RSS agrees on two and blames the ego for one of them
     rash = _run(tmp_path, "rash", "td3", "cat", [("crash_vehicle", 0.3), ("crash_vehicle", 0.5),
                                                   ("crash_vehicle", 0.5)],
                 [("0", 10 + i, 8.0, 2.0, 0.0) for i in range(10)],
-                crashes=[("0", "ego", "ego"), ("1", "other", "ego"), ("2", "other", "n/a")])
+                crashes=[("0", "ego", "ego", "ego"), ("1", "other", "ego", "other"), ("2", "other", "n/a", "n/a")])
 
     rows = cmp.main(["--runs", str(replay), str(slow), str(rash), "--out-dir", str(tmp_path / "cmp"),
                      "--quantile", "0.8", "--timid-quantile", "0.5"])
@@ -72,6 +74,8 @@ def test_policies_are_compared_against_the_replayed_log(tmp_path, capsys):
     assert by["td3/none"]["timid"] == 1.0 and by["td3/none"]["aggressive"] == 0.0
     assert by["td3/cat"]["crash_rate"] == 1.0 and by["td3/cat"]["ego_fault_share"] == pytest.approx(1 / 3)
     assert by["td3/cat"]["rule_agreement"] == 0.5 and by["td3/cat"]["rule_coverage"] == pytest.approx(2 / 3)
+    assert by["td3/cat"]["rss_agreement"] == 1.0 and by["td3/cat"]["rss_coverage"] == pytest.approx(2 / 3)
+    assert by["td3/cat"]["rss_ego_fault_share"] == 0.5
     assert by["td3/cat"]["aggressive"] == 1.0
     ref_timid = by["replay/none"]["timid"]
     assert 0 < ref_timid < 1 and by["td3/none"]["timid_x_ref"] == pytest.approx(1.0 / ref_timid)

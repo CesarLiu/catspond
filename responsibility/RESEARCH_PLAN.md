@@ -110,6 +110,13 @@
 **目标：** RL 训练中只按自车应负的责任比例惩罚碰撞，去掉"无法避免的碰撞"带来的错误学习信号。
 
 ### M2.1 碰撞归因函数：`responsibility/blame.py`（1–2 天，可离线开发）
+> **RSS 基线（2026-10-04 完成）：** `responsibility/rss.py` 实现 RSS（Shalev-Shwartz et al. 2017）的归因：
+> - 先找危险阈值时刻 t_b（Def. 9）；再按纵向（Def. 4）或横向（Def. 8）的 proper response，检查双方的速度是否超出允许的包络，超出的一方负责；
+> - 车道方向取地图上最近的车道中心线；参数取 ad-rss-lib 的默认值，双方的响应时间都是 1 s；
+> - 只覆盖同向碰撞（追尾、切入、侧刮）；对向和交叉碰撞需要路权规则，给 `n/a`。
+>
+> 接入的地方：`crashes.csv` 的 `rss` 列；`compare_policies` 的 `RSS agree`、覆盖率和 RSS 判定的自车责任占比（另有矩阵）；`summarize_blame`。训练基线 `cat_RLtrain.py --blame_weighting rss`（实验名后缀 `_rss`）：RSS 判定对方单独负责时去掉惩罚，其余情况保留全部惩罚，不需要 DenseTNT。单元测试覆盖追尾、急刹（RSS 判前车，追尾规则判后车）、切入和双方都偏移。真实碰撞上的一致率待 M3.4。
+>
 > **状态：** 已完成。规则基线 `rear_end_rule`（追尾归后车）：两车朝向相差 < 30°，且对方位于自车的前方或后方（按两车半尺寸归一化后，纵向偏移大于横向偏移），才判定为追尾；其余情形不给判定。每条归因都带上规则的判定（`crashes.csv` 的 `rule` 列），`compare_policies` 输出两者都给出判定时的一致率（`rule agree`）和规则的覆盖率。真实碰撞上的一致率待 M3.4 的 rollout 结果。
 - `crash_blame(model, scene, ego, crash_step, other=None)`：
   - 碰撞对象默认取碰撞时刻距离自车最近的车，有对手时取对手；

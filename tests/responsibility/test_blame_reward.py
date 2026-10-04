@@ -107,6 +107,7 @@ def test_a_collision_the_ego_did_not_cause_is_not_penalised(tmp_path):
     row = rows[0]
     assert row["crash_step"] == "25" and row["other_id"] == "1" and row["scene"] == "7"
     assert row["verdict"] == "other" and row["rule"] == "other" and float(row["weight"]) == 0.0
+    assert row["rss"] == "other"  # RSS, logged alongside: the tailgater did not brake
     assert int(row["penalised_steps"]) == 14 and row["adversary"] == "1"
     assert "mean penalty weight 0.00" in weighting.summary()
 
@@ -122,6 +123,19 @@ def test_doubt_keeps_the_full_penalty(tmp_path):
     weighting.attribute = lambda *a: (_ for _ in ()).throw(RuntimeError("no model"))
     raw, transitions = _episode(weighting, scene)
     assert [t[3] for t in transitions] == raw and weighting.weights == [1.0]
+
+
+def test_the_rss_baseline_needs_no_model(tmp_path):
+    scene, scenes, _ = _rear_end(tmp_path)
+    log = tmp_path / "rss.csv"
+    weighting = BlameWeighting(None, scenes, PENALTY, log_path=log, verbose=False, mode="rss")
+    raw, transitions = _episode(weighting, scene)
+    assert min(raw) == -PENALTY
+    assert [t[3] for t in transitions] == pytest.approx([STEP_REWARD] * 45)  # RSS blames the follower: w = 0
+    row = next(csv.DictReader(open(log)))
+    assert row["rss"] == "other" and row["verdict"] == "unknown" and float(row["weight"]) == 0.0
+    with pytest.raises(ValueError):
+        BlameWeighting(None, scenes, PENALTY, mode="share")
 
 
 def test_no_collision_leaves_the_episode_as_it_was(tmp_path):

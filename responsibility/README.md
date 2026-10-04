@@ -349,6 +349,27 @@ is at fault. It applies when both travel the same way (headings within 30°)
 and the other lies off the ego's front or back rather than its side, and
 says nothing otherwise (`crashes.csv`, column `rule`).
 
+The formal rule-based baseline is **RSS** (Responsibility-Sensitive Safety,
+Shalev-Shwartz et al. 2017; `responsibility/rss.py`, columns `rss` and
+`rss_case`). It finds the danger threshold: the step from which the two
+cars stayed closer than RSS's safe distance, both longitudinally and
+laterally. From there, both owe the proper response of the axis that became
+unsafe last:
+
+- longitudinal: the rear car brakes at least 4 m/s² after a 1 s response
+  time, and the front car brakes at most 8 m/s²;
+- lateral: both stop closing in laterally.
+
+A car whose speed left that envelope (beyond 0.5 m/s longitudinally,
+0.2 m/s laterally) is responsible. A brake-check is therefore the front
+car's fault, where the rear-end rule would blame the follower. The other
+parameters are ad-rss-lib's defaults.
+
+Lane directions come from the map's nearest lane centreline. RSS covers
+same-direction collisions (rear-end, cut-in, side-swipe). Oncoming and
+crossing ones need right-of-way rules from the lane graph, so they get
+`n/a`, and `compare_policies` reports RSS's coverage.
+
 ```bash
 python -m scripts.responsibility.fit_levels --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
     --fit-runs P/replay/none --out-dir P/levels            # P=logs/responsibility/policies
@@ -362,8 +383,8 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 
 - from the rollouts: crash rate, route completion, arrival and out-of-road rates;
 - the ego-fault and other-fault shares of the attributed collisions, and
-  their agreement with the rear-end rule where both decide (with the rule's
-  coverage in `comparison.csv`);
+  their agreement with the rear-end rule and with RSS where both decide
+  (coverage, and RSS's own ego-fault share, in `comparison.csv`);
 - the share of windows the ego was stopped (below `--min-speed`, not judged);
 - the aggressive and timid shares of the judged windows, and each relative
   to the reference ("× ref");
@@ -376,8 +397,8 @@ Runs of one training setting with different seeds (policy names ending in
 `_s<seed>`, as `cat_RLtrain.py` names its models) are averaged in
 `comparison_seeds.csv`/`.md`: mean ± standard deviation of every column per
 training setting and test adversary. The markdown adds matrices of training
-setting × test adversary for the crash rate, the ego-fault share, route
-completion and the timid and aggressive shares: the cross evaluation of
+setting × test adversary for the crash rate, the ego-fault share (and
+RSS's), route completion and the timid and aggressive shares: the cross evaluation of
 policies trained against different adversaries (and penalties), each tested
 without an adversary, with CAT's and with the fair one.
 
@@ -426,6 +447,12 @@ share of each verdict and the mean weight. It also shows how often the
 full penalty was kept and how often the other was mostly at fault
 (w < 0.5), plus the agreement with the rear-end rule, the time per
 attribution, and the mean weight over spans of training.
+
+`--blame_weighting rss` is the rule-based baseline (`cat_rss`, …). It
+removes the whole penalty when RSS puts the collision on the other car
+alone, and keeps all of it otherwise. It needs no DenseTNT. Every
+collision's RSS verdict is logged in both modes, and `summarize_blame`
+reports RSS's verdicts and its agreement with the counterfactual one.
 
 The weighting is tested against a stand-in for the training env
 (`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of

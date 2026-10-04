@@ -16,6 +16,10 @@ Per run (policy x adversary mode):
                      as ego or other, the share where they agree; rule
                      coverage: the share of attributed collisions the rule
                      decides at all (rear-end ones)
+  RSS                the same against Responsibility-Sensitive Safety
+                     (responsibility/rss.py; same-direction collisions):
+                     agreement, coverage (of all collisions), and RSS's own
+                     ego-fault share of the collisions it decides
   stopped            share of windows slower than --min-speed (not judged)
   aggressive         share of judged windows with beta_s or beta_c above the
                      reference's thresholds (summarize_responsibility's
@@ -71,6 +75,7 @@ from responsibility.rollouts import load_rollout, outcome, rollout_files  # noqa
 
 FAULT_VERDICTS = ("ego", "other", "shared", "ego-only")
 SIDES = ("ego", "other")
+RSS_VERDICTS = ("ego", "other", "shared")
 
 
 def parse_args(argv=None):
@@ -128,6 +133,7 @@ def run_row(label, windows, outcomes, crashes, t_s, t_c, t_t, min_speed, levels=
     c = np.array([w["courtesy"] for w in judged])
     attributed = [r for r in crashes if r["verdict"] in FAULT_VERDICTS]
     decided = [r for r in attributed if r["verdict"] in SIDES and r.get("rule") in SIDES]
+    rss_decided = [r for r in attributed if r["verdict"] in SIDES and r.get("rss") in SIDES]
     row = {
         "run": label,
         "episodes": len(outcomes),
@@ -136,6 +142,9 @@ def run_row(label, windows, outcomes, crashes, t_s, t_c, t_t, min_speed, levels=
         "other_fault_share": _mean([r["verdict"] == "other" for r in attributed]),
         "rule_agreement": _mean([r["verdict"] == r["rule"] for r in decided]),
         "rule_coverage": _mean([r.get("rule") in SIDES for r in attributed]),
+        "rss_agreement": _mean([r["verdict"] == r["rss"] for r in rss_decided]),
+        "rss_coverage": _mean([r.get("rss") in RSS_VERDICTS for r in crashes]),
+        "rss_ego_fault_share": _mean([r["rss"] == "ego" for r in crashes if r.get("rss") in RSS_VERDICTS]),
         "route_completion": _mean([o["route_completion"] for o in outcomes]),
         "arrive_rate": _mean([o["arrive_dest"] for o in outcomes]),
         "out_of_road_rate": _mean([o["out_of_road"] for o in outcomes]),
@@ -170,11 +179,13 @@ def with_reference_ratios(rows, reference):
 
 
 PERCENT = ("crash_rate", "ego_fault_share", "other_fault_share", "rule_agreement", "rule_coverage",
+           "rss_agreement", "rss_coverage", "rss_ego_fault_share",
            "route_completion", "arrive_rate",
            "out_of_road_rate", "stopped", "aggressive", "aggressive_safety", "aggressive_courtesy", "timid",
            "aggressive_levels")
 COLUMNS = [("run", "run"), ("episodes", "episodes"), ("crash_rate", "crash"), ("ego_fault_share", "ego-fault"),
-           ("rule_agreement", "rule agree"), ("route_completion", "route compl."), ("stopped", "stopped"), ("aggressive", "aggressive"),
+           ("rule_agreement", "rule agree"), ("rss_agreement", "RSS agree"), ("route_completion", "route compl."),
+           ("stopped", "stopped"), ("aggressive", "aggressive"),
            ("aggressive_x_ref", "x ref"), ("timid", "timid"), ("timid_x_ref", "x ref"),
            ("safety_median", "β_s median"), ("courtesy_p90", "β_c p90")]
 
@@ -206,6 +217,7 @@ def markdown(rows):
 
 SEED = re.compile(r"_s\d+$")
 MATRIX = [("crash_rate", "crash rate"), ("ego_fault_share", "ego-fault share of collisions"),
+          ("rss_ego_fault_share", "RSS ego-fault share of the collisions RSS decides"),
           ("route_completion", "route completion"), ("timid", "timid windows"),
           ("aggressive", "aggressive windows")]
 
