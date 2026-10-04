@@ -3,3 +3,9 @@ logs/
 responsibility/__pycache__/
 scripts/responsibility/__pycache__/
 tests/**/__pycache__/
+# data and large outputs (the scenes folder must hold only scenario files: MetaDrive reads every file in it)
+raw_scenes_500/
+rollouts/
+models/
+# DenseTNT scratch files of CAT's AdvGenerator
+tmp/

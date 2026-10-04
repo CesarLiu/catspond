@@ -202,14 +202,21 @@ RHO=0.3   # 按 fair 规则的碰撞率 / 不可避免碰撞的权衡修改
 CAT 的 `requirements.txt` 固定了 `torch==1.12.0+cu116`，在 H200 上不能用，所以要排除它和 TF 相关的包：
 
 ```bash
-grep -v -E "^(torch|torchvision|waymo-open-dataset|pickle5)" requirements.txt > /tmp/cat_requirements.txt
+grep -v -E "^(torch|torchvision|waymo-open-dataset|pickle5|opencv-python)" requirements.txt > /tmp/cat_requirements.txt
+echo "numpy<1.24" >> /tmp/cat_requirements.txt   # 不让 pip 升级 numpy（TF 2.12 需要 < 1.24）
 python -m pip install "pip<24.1"        # gym==0.22.0 的元数据在新版 pip 下安装会报错
 python -m pip install -r /tmp/cat_requirements.txt
+python -m pip install "setuptools<81"   # 见下方说明
 # pickle5 是 Python < 3.8 的 backport（需要编译）；3.9 的 pickle 自带 protocol 5，CAT 只是按名字导入
 echo "from pickle import *  # noqa" > "$(python -c 'import site; print(site.getsitepackages()[0])')/pickle5.py"
-python -c "import metadrive, gym, panda3d; print('metadrive ok')"   # 仓库自带的 metadrive/ 从根目录直接导入
+python -c "import cv2, metadrive, gym, panda3d; print('metadrive ok')"   # 仓库自带的 metadrive/ 从根目录直接导入
 export SDL_VIDEODRIVER=dummy             # 无显示器时 pygame 的 top-down 渲染需要
 ```
+
+在 L4 机器上实际安装时遇到的三个问题（2026-10-04），上面的命令已经避开：
+- **OpenCV：** 不要装 `opencv-python`。它和 `setup_env.sh` 装的 `opencv-python-headless` 都提供 `cv2`，后装的会覆盖前者，而它需要系统的 `libGL.so.1`，服务器上通常没有。headless 版本对 CAT 已经够用。
+- **setuptools < 81：** Panda3D 通过 `pkg_resources` 找到 `panda3d-gltf` 的加载插件，而 setuptools 81 起去掉了 `pkg_resources`。没有它的时候，MetaDrive 预加载行人模型会改用 Assimp，报错 `mismatched number of frames`。注意：用错误的加载器载入过一次之后，Panda3D 会把结果缓存到 `~/.cache/panda3d`，之后报的是 `get_anim_control` 的 `AssertionError`。这时要删掉这个缓存目录。
+- **场景目录：** `raw_scenes_500/` 里只能放场景文件。MetaDrive 会把目录里的每个文件都当成场景读取，例如 `.gitignore` 会触发 `.gitignore is not .pkl file`。要让 git 忽略这个目录，在仓库根目录的 `.gitignore` 里加规则（现在已经加了）。
 
 安装后确认 torch 仍然是 2.4.1+cu121：
 
