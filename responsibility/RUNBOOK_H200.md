@@ -264,7 +264,7 @@ python cat_advgen.py --adv_selection fair --resp_threshold $TAU --resp_avoid $RH
 
 先在小机器上跑过一次试点（每组 1 个种子，2e5 步），确认整条流程能跑通，见 9a。
 
-用脚本启动全部 21 个训练（7 组 × 3 个种子）：
+用脚本启动 17 个训练：5 组核心设置（`replay`、`cat`、`cat_share`、`cat_rss`、`cat_fair2_0.1`）各 3 个种子，两个消融（`cat_fairinf_0.5`、`cat_fair2_0.1_share`）只跑种子 0（`ABLATION_SEEDS`，默认 `0`）。消融的种子 0 和 `cat` 差别明显时，再用 `ABLATION_SEEDS="0 1 2"` 补跑另外两个种子，已完成的会跳过。
 
 ```bash
 DRY=1 bash scripts/responsibility/run_rl.sh                 # 先看会启动哪些训练、同时跑几个
@@ -405,8 +405,8 @@ done
 - 它和 CAT 对手的 4 次碰撞，归因判对手 3 次、双方 1 次。
 
 **正式训练的估算：**
-- 1e6 步、5 个训练并行时，每个约 13 小时；7 组 × 3 个种子 = 21 个训练。
-- 在这样一台 8 核、31 GB 的机器上，分 4–5 批，约 3 天。
+- 1e6 步、5 个训练并行时，每个约 13 小时（试点估算）。实际在这台 L4 机器上和 SMART 一起跑时，每个约 19 小时。
+- 21 个训练要 5 批，约 4 天。2026-10-05 改成 17 个，4 批，约 3.2 天，省下约 19 小时（见 8b）。
 - 核更多的服务器可以同时跑更多个，每个训练按 4.5 GB 内存估算。
 
 ## 10. ⚠ 策略的双向驾驶风格评测（方向 3，M3.0–M3.4）
@@ -449,11 +449,12 @@ python -m scripts.responsibility.collect_rollouts --policy replay --adversary $A
 - 回放的自车不会报 `crash_vehicle`：MetaDrive 在碰撞检查之后又调用了回放车辆的 `before_step`，把当步的标志清掉了。所以 `collect_rollouts` 改为读 `ego_crash_flag`，CAT 的 `cat_advgen.py` 也是这么做的（提交见下）。在这之前采集的回放 rollout 里一次碰撞都没有，要重新采集。
 - 2026-10-04 修复了 CAT 回放对手计划的一个错位（提交 0b94e88，见 README）：对手在日志里出现得晚的场景，原来会被放到原点若干步，然后整段计划都晚执行。这类场景在 500 个里有 24 个，测试集里有 8 个。修复前采集的对抗 rollout 要重新采集。
 
-再采集训练好的策略：21 个模型（第 8b 步的 7 组 × 3 个种子），每个模型在三种测试对手下各跑一次：
+再采集训练好的策略：17 个模型（第 8b 步：5 组核心设置 × 3 个种子，加上两个消融的种子 0），每个模型在三种测试对手下各跑一次：
 
 ```bash
 for seed in 0 1 2; do
   for name in replay cat cat_share cat_rss cat_fair2_0.1 cat_fairinf_0.5 cat_fair2_0.1_share; do
+    [ -e models/${name}_s${seed}_actor ] || continue   # the ablations have only seed 0
     for adv in "--adv_selection cat" "$FAIR" "$ABL"; do
       tag=$(echo "$adv" | awk '{print $2}')
       nohup python -m scripts.responsibility.collect_rollouts --policy models/${name}_s$seed \

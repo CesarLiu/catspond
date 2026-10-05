@@ -12,11 +12,16 @@
 # usage (from the repository root, environment active; MetaDrive installed as in runbook step 7):
 #   bash scripts/responsibility/run_rl.sh
 #   PARALLEL=12 SEEDS="0 1 2" bash scripts/responsibility/run_rl.sh
+#   ABLATION_SEEDS="0 1 2" bash scripts/responsibility/run_rl.sh   # all 21 runs
 #   DRY=1 bash scripts/responsibility/run_rl.sh          # print the runs, start nothing
 #
 # variables (defaults):
 #   SEEDS         seeds                                            ("0 1 2")
 #   SETTINGS      names from the list above                        (all seven)
+#   ABLATION_SEEDS  the seeds (of SEEDS) for the two ablations,
+#                 cat_fairinf_0.5 and cat_fair2_0.1_share: by default
+#                 seed 0 only, so 5 x 3 + 2 x 1 = 17 runs. More seeds
+#                 only if seed 0 differs clearly from cat              ("0")
 #   STEPS         training steps                                   (1000000)
 #   PARALLEL      runs at a time                                   (by free memory at 4.5 GB a run, at most the cores)
 #   NO_STORE_MAP  1: rebuild maps each episode (--no_store_map)    (1)
@@ -35,6 +40,7 @@ set -uo pipefail
 
 SEEDS=${SEEDS:-"0 1 2"}
 SETTINGS=${SETTINGS:-"replay cat cat_share cat_rss cat_fair2_0.1 cat_fairinf_0.5 cat_fair2_0.1_share"}
+ABLATION_SEEDS=${ABLATION_SEEDS:-0}
 STEPS=${STEPS:-1000000}
 NO_STORE_MAP=${NO_STORE_MAP:-1}
 DRY=${DRY:-0}
@@ -45,6 +51,12 @@ PARALLEL=${PARALLEL:-$(( by_mem < $(nproc) ? by_mem : $(nproc) ))}
 
 FAIR="--adv_selection fair --resp_threshold 2 --resp_avoid 0.1"
 ABL="--adv_selection fair --resp_threshold inf --resp_avoid 0.5"
+planned() {  # setting, seed
+  case "$1" in
+    cat_fairinf_0.5|cat_fair2_0.1_share) [[ " $ABLATION_SEEDS " == *" $2 "* ]] ;;
+    *) true ;;
+  esac
+}
 flags_of() {
   case "$1" in
     replay) echo "--mode replay" ;;
@@ -72,6 +84,7 @@ k=0
 for seed in $SEEDS; do
   for name in $SETTINGS; do
     run=${name}_s$seed
+    planned "$name" "$seed" || continue
     if [ -f "logs/rl/$run.done" ]; then
       echo "skip $run (done)"
       continue
@@ -120,4 +133,6 @@ printf '%s\n' "${jobs[@]}" | xargs -P "$PARALLEL" -I{} bash -c '
 
 echo
 echo "finished: $(ls logs/rl/*.done 2>/dev/null | wc -l) runs done; failed or stopped ones have no .done:"
-for seed in $SEEDS; do for name in $SETTINGS; do [ -f "logs/rl/${name}_s$seed.done" ] || echo "  ${name}_s$seed"; done; done
+for seed in $SEEDS; do for name in $SETTINGS; do
+  planned "$name" "$seed" && [ ! -f "logs/rl/${name}_s$seed.done" ] && echo "  ${name}_s$seed"
+done; done
