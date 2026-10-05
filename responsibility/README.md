@@ -530,6 +530,44 @@ The weighting is tested against a stand-in for the training env
 (`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of
 the penalty; doubt and failed attributions keep all of it).
 
+## Does the verdict depend on the motion model? (SMART)
+
+`scripts/responsibility/run_smart.sh` measures CAT's scenes with CAT-K's SMART
+(the `clsft_E9` checkpoint) through catk's own pipeline (`responsibility/SMART_PLAN.md`):
+`export_catk.py` writes catk's cache, catk's `compute_responsibility` runs with
+`--query interest --neighbor-future hidden --courtesy-estimator exact`, and
+`import_catk.py` turns the observations into `sdc` and `adv` runs of this
+repository's format, which `compare_models.py` compares with DenseTNT's.
+`cache_womd_for_cat.py` builds the same scenes from WOMD v1.2.1 instead
+(from `extract_womd_scenarios.py`'s extract of the 497 scenario ids).
+
+```bash
+bash scripts/responsibility/run_smart.sh                          # about 10 h on an L4 for the 500 scenes
+~/venvs/catk/bin/python -m scripts.responsibility.import_catk --run logs/catk/scenes/run --out-dir logs/catk/scenes/windows
+python -m scripts.responsibility.compare_models --runs logs/responsibility/sdc logs/catk/scenes/windows/sdc \
+    --labels DenseTNT SMART --out-dir logs/catk/compare/densetnt_vs_smart_sdc
+```
+
+On the 500 logged scenes (6,500 windows per agent, flags at each model's own q90):
+
+| comparison | agent | Spearman β_s | Spearman β_c | aggressive flag: agree / κ | scene verdict: agree / κ |
+|---|---|---|---|---|---|
+| SMART on WOMD v1.1 vs v1.2.1 | SDC | 0.92 | 0.99 | 0.97 / 0.86 | 0.95 / 0.90 |
+| | adversary | 0.94 | 0.99 | 0.98 / 0.89 | 0.94 / 0.88 |
+| DenseTNT vs SMART (v1.1) | SDC | 0.60 | 0.47 | 0.82 / 0.17 | 0.62 / 0.24 |
+| | adversary | 0.63 | 0.52 | 0.84 / 0.24 | 0.69 / 0.36 |
+
+- The data version does not matter (κ 0.86–0.90): the driveways and
+  re-processed maps of v1.2.1 leave SMART's verdicts as they were.
+- The motion model does. The two models rank windows moderately alike, but
+  their top-decile aggressive flags agree only slightly (κ 0.17–0.24). β_s has
+  the same scale in both (positive median 0.05–0.09 m, q90 0.5–0.8 m). Scene
+  averages agree far better: Spearman 0.77 (SDC) and 0.82 (adversary) for the
+  mean β_s.
+- SMART's β_c of the SDC is unexplained so far: median 0.54 nats, against 0.06
+  for the adversary; DenseTNT gives 0.05–0.07 for both. Compare SMART's β_c
+  by rank only.
+
 ## GPU server (e.g. Ubuntu 24.04 + H200)
 
 The full sequence of experiments on the server, step by step, is in
@@ -615,3 +653,7 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   agent's influence enters only through its recent past and current state.
 - Thresholds are relative to a reference population; the verdict is "unusual
   compared with that driving", not an absolute safety judgement.
+- Window-level flags depend on the motion model: DenseTNT and SMART agree with
+  κ 0.17–0.24 on the aggressive windows of the same scenes. Scene-level and
+  aggregate results are more stable (Spearman 0.77–0.83 of the scene mean and
+  maximum β_s).
