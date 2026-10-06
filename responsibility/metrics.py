@@ -30,6 +30,11 @@ vehicle neighbours; safety toward every neighbour.
 
 Both are open-loop: DenseTNT conditions on the 1.1 s of history up to k and
 never on anyone's future.
+
+With ``filter`` (responsibility.motion_filter), beta_s(a, b) is taken over
+the valid part of a's motion set only: same route, on the road,
+kinematically feasible, through no third agent. The per-neighbour entries
+then also hold "kept" and "kept_mass" (what survived).
 """
 
 from dataclasses import asdict, dataclass, field
@@ -40,6 +45,7 @@ import torch
 
 from responsibility.geometry import pairwise_min_distance_over_time
 from responsibility.interaction import InteractionConfig, interacting_neighbours
+from responsibility.motion_filter import MotionFilter, MotionFilterConfig
 from responsibility.risk import cvar
 from responsibility.scene import Scene
 
@@ -57,6 +63,7 @@ class ResponsibilityConfig:
     courtesy: bool = True
     seed: int = 0
     motion_set: str = "sampled"  # or "weighted": the model's whole motion set, probability-weighted
+    filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
 
 
 @dataclass
@@ -167,8 +174,9 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     ``record``, if given, receives what the values were computed from (for
     visualisation): "distribution" (the agent's goal distribution),
     "samples" [N, 80, 2] and "sample_log_prob" [N] (None without neighbours),
-    "horizon", "neighbours" {index: evidence} and "courtesy" {neighbour
-    index: (distribution with, without the agent)}."""
+    "horizon", "neighbours" {index: evidence}, "courtesy" {neighbour
+    index: (distribution with, without the agent)} and, with a filter,
+    "kept" {neighbour index: indices of the samples beta_s used}."""
     horizon = effective_horizon(scene, step, cfg)
     if horizon == 0:
         return None
@@ -181,17 +189,26 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     per_neighbour: Dict[str, Dict[str, float]] = {}
     if record is not None:
         record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
-                      neighbours=neighbours, courtesy={})
+                      neighbours=neighbours, courtesy={}, kept={})
     if neighbours:
         trajs, sample_log_prob, weights = motion_set(model, dist, cfg, generator)
         if record is not None:
             record["samples"], record["sample_log_prob"] = trajs, sample_log_prob
         samples = trajs[:, :horizon, :2]
         actual, actual_valid = scene.position[agent, fut, :2], scene.valid[agent, fut]
+        valid_set = (MotionFilter(scene, agent, step, np.asarray(trajs)[..., :2], horizon, list(neighbours),
+                                  cfg.filter, weights) if cfg.filter.active else None)
         for b, evidence in neighbours.items():
             entry = dict(evidence, type=scene.types[b])
+            s_b, w_b = samples, weights
+            if valid_set is not None:
+                idx = valid_set.keep(b)
+                s_b, w_b = samples[idx], None if weights is None else weights[idx]
+                entry.update(valid_set.stats(idx))
+                if record is not None:
+                    record["kept"][b] = idx
             entry["safety"] = safety_responsibility(
-                samples, actual, actual_valid, scene.position[b, fut, :2], scene.valid[b, fut], cfg, weights)
+                s_b, actual, actual_valid, scene.position[b, fut, :2], scene.valid[b, fut], cfg, w_b)
             entry["courtesy"] = None
             if cfg.courtesy:
                 pair = model.with_and_without(scene, step, b, agent)

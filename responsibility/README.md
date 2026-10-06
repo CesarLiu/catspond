@@ -643,6 +643,28 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   (`agent_type='vehicle'`); safety is measured toward every neighbour.
 - **D_g saturates at 10 m** and CVaR uses the upper-tail convention with
   α = 0.1 (close to the mean), as in catk (`responsibility/risk.py`).
+- **Valid counterfactuals (optional, `--valid-counterfactuals`).** β_s can be
+  taken over the valid part of the motion set only (`responsibility/motion_filter.py`).
+  The trajectories stay the motion model's; filters only remove some of them:
+  - **route:** the alternative stays within 2 m of the agent's logged route,
+    so its intent is unchanged and speed and timing stay free;
+  - **drivable:** it stays within 3 m of a vehicle lane centreline;
+  - **kinematics:** longitudinal acceleration stays within −9 to +5 m/s² and
+    lateral acceleration below 7 m/s²;
+  - **collision:** it does not drive through a third agent's logged future.
+
+  `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
+  probability-weighted, instead of 40 samples.
+
+  On the first 30 scenes (390 SDC windows, DenseTNT, `logs/filter_trial`), each
+  filter alone removes, in probability mass: route 23%, drivable 12%,
+  collision 1%, kinematics 0%. β_s hardly changes: Spearman 0.93 with the
+  unfiltered values, mean change −0.003 m (40 samples) and −0.009 m (weighted
+  grid); only 1% of windows drop by more than 0.5 m. Within the 2 s metric
+  horizon the alternatives that leave the route have not yet left it (their
+  median distance from the logged path over 2 s is 0.36 m). The filters make
+  the set valid, but they cannot add what the motion model does not predict:
+  alternatives that brake when a neighbour cuts in.
 
 ## Limitations
 
@@ -653,6 +675,11 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   agent's influence enters only through its recent past and current state.
 - Thresholds are relative to a reference population; the verdict is "unusual
   compared with that driving", not an absolute safety judgement.
+- The motion set lacks short-term reactions. Over the 2 s metric horizon,
+  DenseTNT's alternatives stay within 0.26 m (median ADE) of the logged future.
+  In the 403 windows where the logged driver braked by more than 2 m/s, only
+  4% of them braked as well. β_s therefore cannot show that braking would
+  have kept more distance. Filtering (above) does not change this.
 - Window-level flags depend on the motion model: DenseTNT and SMART agree with
   κ 0.17–0.24 on the aggressive windows of the same scenes. Scene-level and
   aggregate results are more stable (Spearman 0.77–0.83 of the scene mean and

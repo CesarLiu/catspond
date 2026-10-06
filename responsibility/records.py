@@ -81,6 +81,8 @@ def capture_frame(model, scene: Scene, agent: int, step: int, cfg: Responsibilit
         "metric_samples": record["samples"] is not None,
         "goals": sparse_goals(record["distribution"], top_mass),
         "courtesy": courtesy,
+        # with a motion filter: per neighbour track id, the samples beta_s used
+        "kept": {scene.track_ids[b]: np.asarray(idx) for b, idx in record.get("kept", {}).items()},
     }
     return obs, frame
 

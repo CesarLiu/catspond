@@ -1,6 +1,7 @@
 """Model selection, the weighted motion set and run-settings compatibility."""
 
 import json
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,6 +10,7 @@ import torch
 
 from responsibility.metrics import ResponsibilityConfig, responsibility_at, weighted_cvar
 from responsibility.models import load_model, model_settings
+from responsibility.motion_filter import MotionFilterConfig
 from responsibility.risk import cvar
 from scripts.responsibility.compute_responsibility import same_settings
 from tests.responsibility.conftest import FakeModel, make_scene, track
@@ -54,13 +56,17 @@ def test_weighted_motion_set_in_the_metric():
 
 
 def test_runs_made_before_model_choice_still_resume():
-    settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled"}, "agent": "sdc",
+    off = asdict(MotionFilterConfig())
+    settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled", "filter": off}, "agent": "sdc",
                 "scenes": "/x", "model": {"name": "densetnt"}}
     old = {"responsibility": {"n_safety_samples": 40}, "agent": "sdc", "scenes": "/x"}
     assert same_settings(json.loads(json.dumps(old)), settings)
+    filtered = dict(settings, responsibility=dict(settings["responsibility"], filter=dict(off, route_tolerance=2.0)))
+    assert not same_settings(old, filtered)
     mtr = dict(settings, model={"name": "mtr", "checkpoint": "/c.ckpt", "method": "MTR_womd", "temperature": 1.0})
     assert not same_settings(old, mtr)
-    assert not same_settings(old, dict(settings, responsibility={"n_safety_samples": 40, "motion_set": "weighted"}))
+    assert not same_settings(old, dict(settings, responsibility={"n_safety_samples": 40, "motion_set": "weighted",
+                                                                 "filter": off}))
 
 
 def test_model_options():

@@ -246,6 +246,19 @@ class DenseTNT:
         trajs = self.complete(dist, dist.goals[idx.numpy()])
         return idx, dist.log_prob.cpu()[idx], trajs
 
+    def motion_set(self, dist: GoalDistribution, top_mass: float = 0.999):
+        """The whole goal distribution as a weighted motion set: every goal
+        of the dense grid among the most probable ones covering ``top_mass``,
+        completed (trajectories [G, 80, 2], scene frame), with its
+        probability [G] (``--motion-set weighted``). Goals closer along the
+        route stand for slower, braking executions, which 40 samples of a
+        peaked distribution rarely draw."""
+        p = dist.log_prob.double().exp().cpu().numpy()
+        order = np.argsort(-p, kind="stable")
+        n = int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1
+        keep = np.sort(order[:min(n, len(order))])
+        return self.complete(dist, dist.goals[keep]), p[keep]
+
     def nms_modes(self, dist: GoalDistribution, mode_num: Optional[int] = None):
         """CAT's prediction: the top goals after non-maximum suppression,
         completed. Returns (trajectories [K, 80, 2], log scores [K])."""

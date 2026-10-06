@@ -33,6 +33,14 @@ rear-end rule's verdict; "rss": Responsibility-Sensitive Safety's,
 responsibility/rss.py -- the baselines it is compared with) and written to
 OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
 
+--valid-counterfactuals (or the separate --route-tolerance,
+--drivable-half-width, --kinematics, --collision-filter) restricts beta_s to
+the valid part of the agent's motion set: its own route, on the road,
+kinematically feasible, through no third agent (responsibility/
+motion_filter.py); the per-neighbour observations then also record how much
+of the set was kept. With DenseTNT, --motion-set weighted uses its whole goal
+grid, probability-weighted, instead of 40 samples.
+
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
         --out-dir logs/responsibility/sdc --n 50
@@ -57,6 +65,7 @@ import torch  # noqa: E402
 
 from responsibility.blame import rollout_blame  # noqa: E402
 from responsibility.models import add_model_arguments, load_model, model_settings  # noqa: E402
+from responsibility.motion_filter import MotionFilterConfig  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
 from responsibility.records import run_scene, save_record  # noqa: E402
@@ -113,7 +122,20 @@ def parse_args():
     p.add_argument("--n-samples", type=int, default=d.n_safety_samples)
     p.add_argument("--cvar-alpha", type=float, default=d.cvar_alpha)
     p.add_argument("--motion-set", default=d.motion_set, choices=["sampled", "weighted"],
-                   help="weighted: the model's whole motion set, probability-weighted (mtr only).")
+                   help="weighted: the model's whole motion set, probability-weighted "
+                        "(densetnt: its goal grid up to 0.999 of the mass; mtr: its 64 intentions).")
+    f = MotionFilterConfig()
+    g = p.add_argument_group("valid counterfactuals for beta_s (responsibility/motion_filter.py)")
+    g.add_argument("--route-tolerance", type=float, default=f.route_tolerance,
+                   help="m: keep only alternatives within this of the agent's logged route (same intent).")
+    g.add_argument("--drivable-half-width", type=float, default=f.drivable_half_width,
+                   help="m: keep only alternatives within this of a vehicle lane centreline.")
+    g.add_argument("--kinematics", action="store_true", help="Keep only kinematically feasible alternatives.")
+    g.add_argument("--collision-filter", action="store_true",
+                   help="Drop alternatives that drive through a third agent's logged future.")
+    g.add_argument("--valid-counterfactuals", action="store_true",
+                   help="All four filters with route tolerance 2 m and drivable half-width 3 m "
+                        "(explicit --route-tolerance / --drivable-half-width override those).")
     p.add_argument("--d-sat", type=float, default=d.d_sat, help="<= 0 disables saturation.")
     p.add_argument("--horizon", type=int, default=d.metric_horizon, help="10 Hz steps scored.")
     p.add_argument("--stride", type=int, default=d.window_stride, help="Steps between context steps.")
@@ -135,7 +157,7 @@ def parse_args():
 
 # settings added after runs were made, with the value those runs used
 LATER_SETTINGS = {"model": {"name": "densetnt"}}
-LATER_RESPONSIBILITY = {"motion_set": "sampled"}
+LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig())}
 
 
 def same_settings(stored, settings) -> bool:
@@ -161,7 +183,14 @@ def pick_agent(scene: Scene, which: str) -> int:
 
 def main():
     args = parse_args()
+    valid = args.valid_counterfactuals
+    motion_filter = MotionFilterConfig(
+        route_tolerance=args.route_tolerance if args.route_tolerance is not None else (2.0 if valid else None),
+        drivable_half_width=(args.drivable_half_width if args.drivable_half_width is not None
+                             else (3.0 if valid else None)),
+        kinematics=args.kinematics or valid, collision=args.collision_filter or valid)
     cfg = ResponsibilityConfig(
+        filter=motion_filter,
         n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha, motion_set=args.motion_set,
         d_sat=args.d_sat if args.d_sat > 0 else None, metric_horizon=args.horizon,
         window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed,
