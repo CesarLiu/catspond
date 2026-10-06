@@ -27,7 +27,7 @@ SMART 的反事实做法和 DenseTNT 很不一样：
 | S1 导出 | `scripts/responsibility/export_catk.py`：把 `Scene`（logged 场景，或者从 rollout 重建的场景）转成 catk 的缓存格式。**完成（2026-10-04）**：`responsibility/catk_export.py` 重建 catk 解码器那一段的输出（有 3 个单元测试），第二段直接调用 catk 自己的函数 | catk 环境 |
 | S2 核对 | **结构检查通过（2026-10-04，前 5 个场景）**，见下文。导出的场景能被 catk 读入和 token 化；logged 轨迹的 token 化重建误差小；logged 运动在 SMART 下的 next-token NLL 处于正常范围；有条件的话，再与 catk 用原始 WOMD 转出的同一个场景逐字段对照 | catk 环境 |
 | S3 计算 | 在 500 个场景上用 SMART 计算 SDC 和对手的责任。**完成**：v1.1 导出 2026-10-04 19:28 – 10-05 04:48，v1.2.1 原生缓存 10-05 05:00 – 14:59，各约 10 小时，每次 144 万条滚动轨迹（`scripts/responsibility/run_smart.sh`）。每次模型调用 32 份场景副本（128 时显存不够，32 时峰值 6.3 GB） | catk 环境 |
-| S4 对照 | 把 catk 的结果转成本仓库的 `windows.csv`（`scripts/responsibility/import_catk.py`），用现有的 `compare_models.py` 与 DenseTNT 对照；之后对回放参照和策略的 rollout 也做一遍。**logged 场景完成（2026-10-05）**，见下文"S4 的结果"；回放参照的 4 组 rollout 正在跑 SMART（`logs/catk/replay_<对手>`） | 本仓库环境 |
+| S4 对照 | 把 catk 的结果转成本仓库的 `windows.csv`（`scripts/responsibility/import_catk.py`），用现有的 `compare_models.py` 与 DenseTNT 对照；之后对回放参照和策略的 rollout 也做一遍。**logged 场景完成（2026-10-05）**，见下文"S4 的结果"；回放参照的 4 组 rollout（无对手、CAT、fair、只约束可避免性，各 100 个场景）的 SMART 运行已在 2026-10-06 00:33–03:46 跑完（`logs/catk/replay_<对手>`），结果待对照 | 本仓库环境 |
 
 ### S1 导出的设计
 

@@ -27,14 +27,17 @@
 #   NO_STORE_MAP  1: rebuild maps each episode (--no_store_map)    (1)
 #                 Caching every map (0) is faster but grew a run past 5 GB within 8 minutes
 #                 on the pilot machine; with 1 a run stayed at 3.3-4.2 GB.
+#   WATCHDOG      1: the memory and disk watchdog below; 0: none (e.g. for a
+#                 second run_rl.sh next to one that already has it)  (1)
 #   DRY           1: only print what would run                     (0)
 #
 # Each run logs to logs/rl/<name>_s<seed>.log and, once it exits cleanly, leaves
 # logs/rl/<name>_s<seed>.done; re-running the script skips those (a run that failed
 # starts over: cat_RLtrain.py does not resume). Models go to models/<name>_s<seed>_*,
 # saved at every evaluation (--eval_freq, 25000 steps); curves to logs/<name>_MDWaymo-seed<seed>-0/,
-# attributions to logs/blame/. logs/rl/resources.log gets a line a minute; below 2 GB of
-# available memory the youngest run is stopped (and has to be started again), below
+# attributions to logs/blame/. logs/rl/resources.log gets a line a minute; with available
+# memory below 2 GB on two checks a minute apart the youngest run is stopped (and has to
+# be started again: a brief spike from another program once cost a run at 87%), below
 # 5 GB of disk all of them.
 set -uo pipefail
 
@@ -44,6 +47,7 @@ ABLATION_SEEDS=${ABLATION_SEEDS:-0}
 STEPS=${STEPS:-1000000}
 NO_STORE_MAP=${NO_STORE_MAP:-1}
 DRY=${DRY:-0}
+WATCHDOG=${WATCHDOG:-1}
 mem_gb=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
 by_mem=$(( (mem_gb - 4) * 10 / 45 ))
 PARALLEL=${PARALLEL:-$(( by_mem < $(nproc) ? by_mem : $(nproc) ))}
@@ -104,7 +108,8 @@ fi
 export SDL_VIDEODRIVER=dummy OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1
 export TF_CPP_MIN_LOG_LEVEL=3 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-(
+[ "$WATCHDOG" = 1 ] && (
+  low=0
   while true; do
     mem=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
     disk=$(df -BM --output=avail . | tail -1 | tr -dc 0-9)
@@ -114,14 +119,20 @@ export TF_CPP_MIN_LOG_LEVEL=3 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
       echo "$(date '+%m-%d %H:%M') disk below 5 GB: stopping all runs" >> logs/rl/resources.log
       pkill -f "^python -u cat_RLtrain.py"
     elif [ "$mem" -lt 2000 ] && [ "$runs" -gt 0 ]; then
-      echo "$(date '+%m-%d %H:%M') memory below 2 GB: stopping the youngest run" >> logs/rl/resources.log
-      pkill -n -f "^python -u cat_RLtrain.py"
+      low=$((low + 1))
+      if [ "$low" -ge 2 ]; then
+        echo "$(date '+%m-%d %H:%M') memory below 2 GB for 2 min: stopping the youngest run" >> logs/rl/resources.log
+        pkill -n -f "^python -u cat_RLtrain.py"
+        low=0
+      fi
+    else
+      low=0
     fi
     sleep 60
   done
 ) &
 watchdog=$!
-trap 'kill $watchdog 2>/dev/null' EXIT
+[ "$WATCHDOG" = 1 ] && trap 'kill $watchdog 2>/dev/null' EXIT
 
 printf '%s\n' "${jobs[@]}" | xargs -P "$PARALLEL" -I{} bash -c '
   job="{}"; run=${job%%|*}; rest=${job#*|}; gpu=${rest%%|*}; flags=${rest#*|}
