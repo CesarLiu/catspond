@@ -313,6 +313,31 @@ python -m scripts.responsibility.visualize_responsibility --scene adv_scenes/cat
     --out-dir adv_scenes/videos/cat/0_adv
 ```
 
+**Offline and in MetaDrive.** The export imports no MetaDrive module. It
+does differ from CAT's generation in MetaDrive in one input, the vehicle
+sizes CAT uses to decide which candidates hit the ego:
+
+- **Offline:** the sizes logged at step 10.
+- **In MetaDrive:** the ego is always the default vehicle (4.51×1.85 m). An
+  adversary 4–5.5 m long gets one of three vehicle models in turn, through a
+  counter over the whole session (`even_sample_vehicle_class`), so its size
+  depends on what was spawned before it.
+
+`scripts/responsibility/verify_adv_export.py` runs `cat_advgen.py`'s two
+rounds in MetaDrive and compares its plans with the exported ones. The check
+covered scenes 0–2 and every third test scene from 400 to 487, 33 in all:
+
+| sizes used offline | same plan as MetaDrive |
+|---|---|
+| the logged sizes (what the export uses) | 27 of 33 |
+| MetaDrive's ego, the logged adversary | 29 of 33 |
+| the sizes MetaDrive used, for both | 32 of 33 |
+
+The sizes are therefore the only real difference. The remaining scene (451)
+matched with the logged sizes, which suggests two candidates scored almost
+equally. MetaDrive's adversary size cannot be known from the scene alone, so
+the export keeps the logged sizes.
+
 In these scenes the ego is the logged one and does not react to an
 adversary that was not there. Its own β_s toward the adversary is therefore
 often positive as well: in scene 0 it reaches 1.2 m at 3.5 s, because some
