@@ -755,6 +755,16 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   An earlier version of this note said that only 4% brake where the driver
   braked. That number counted alternatives braking harder than the driver,
   not alternatives braking at all.
+- What the RL settings use holds up under SMART (`SMART_PLAN.md`, S4 on the
+  replay reference rollouts):
+  - **Adversary β.** The ordering of the adversaries' β toward the ego is the
+    same under both models: logged +0.03, fair +0.77, avoidability only
+    +1.27, CAT +1.98 m (SMART, per-scene median). The scale is not: SMART puts
+    CAT's adversaries at about a third of DenseTNT's value, so τ = 2 m is a
+    DenseTNT-calibrated threshold.
+  - **Collision verdicts.** The two models agree on 62–81% of the
+    collisions, about as often as the counterfactual verdict agrees with RSS
+    and the rear-end rule.
 - Window-level flags depend on the motion model: DenseTNT and SMART agree with
   κ 0.17–0.24 on the aggressive windows of the same scenes. Scene-level and
   aggregate results are more stable (Spearman 0.77–0.83 of the scene mean and
