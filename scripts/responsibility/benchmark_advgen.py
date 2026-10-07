@@ -133,7 +133,8 @@ def fake_env(description, seed, scene):
         return {n: obj(scene.sdc if n == "default_agent" else scene.index(n)) for n in names}
 
     engine = types.SimpleNamespace(data_manager=types.SimpleNamespace(_scenario={seed: copy.deepcopy(description)}),
-                                   get_objects=get_objects, get_object=get_objects)
+                                   get_objects=get_objects, get_object=get_objects,
+                                   traffic_manager=types.SimpleNamespace(set_adv_info=lambda name, plan: None))
     del ego_id
     return types.SimpleNamespace(current_seed=seed, engine=engine)
 

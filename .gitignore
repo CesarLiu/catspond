@@ -9,3 +9,6 @@ rollouts/
 models/
 # DenseTNT scratch files of CAT's AdvGenerator
 tmp/
+models_eval/
+rollouts_eval/
+adv_scenes/

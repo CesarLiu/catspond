@@ -282,6 +282,42 @@ predicted on its own; CAT batches it with the ego, which moves the prediction
 slightly (see Design decisions), so every rule chooses among the same
 candidates.
 
+### Adversarial scenes as files
+
+`scripts/responsibility/export_adv_scenes.py` writes the adversarial
+counterpart of every scene. It runs CAT's generator against the logged ego,
+as `cat_advgen.py`'s second round does, but without MetaDrive and keeping
+the result as data.
+
+- **What changes.** Each file is a copy of the original scene in which only
+  the adversary's track from step 11 on is replaced by the generated plan:
+  position, heading, velocity and validity. Steps 0–10 are the history CAT
+  plans from.
+- **Where it goes.** The files are `OUT/<rule>/<scene>.pkl`, named like
+  `raw_scenes_500`, so `Scene.load`, `compute_responsibility.py`,
+  `visualize_responsibility.py --scene` and MetaDrive read them as they are.
+- **What is recorded.** `metadata.adversary` and `OUT/<rule>/index.json`
+  hold the rule, the chosen candidate, its predicted collision score, the
+  adversary's β and the first step at which the plan overlaps the logged
+  ego.
+
+With `--rule cat` (500 scenes, `adv_scenes/cat`, about 1 s a scene on the
+GPU), the plan overlaps the logged ego in 476 scenes (95%). The first overlap
+comes at a median step of 53, and the adversary's median β is +5.14 m, as
+in the benchmark above.
+
+```bash
+python -m scripts.responsibility.export_adv_scenes --out-dir adv_scenes                     # CAT's rule
+python -m scripts.responsibility.export_adv_scenes --rule fair --resp_threshold 2 --resp_avoid 0.1 --out-dir adv_scenes
+python -m scripts.responsibility.visualize_responsibility --scene adv_scenes/cat/0.pkl --agent adv \
+    --out-dir adv_scenes/videos/cat/0_adv
+```
+
+In these scenes the ego is the logged one and does not react to an
+adversary that was not there. Its own β_s toward the adversary is therefore
+often positive as well: in scene 0 it reaches 1.2 m at 3.5 s, because some
+of its alternatives would have kept more distance.
+
 ## Driving policies (rollouts)
 
 The same measurements apply to a policy driving in MetaDrive. A **rollout**
