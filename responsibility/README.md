@@ -360,6 +360,21 @@ drive any later vehicle of the same name, for example in
 nothing changes. With the fix, every adversary follows its plan exactly one
 step late (lag-1 error 0.00 m).
 
+`before_episode` runs only after `env.reset()`, though, and the reset already
+steps the traffic manager once with the previous episode's adversary. A
+`StepAlignedPlan` is never emptied, unlike CAT's popped list, so in that
+first step it moved the next scenario's object of the same name. A same-named
+cyclist, which is not in the manager's `v_map`, raised a KeyError that
+stopped `cat_share_s1` at 483k steps on 2026-10-07. The plan now has length 0
+once the env has moved to another scenario, so the manager no longer applies
+it there.
+
+Measured over training scenes 0–399, the adversary's name exists in another
+scene 2.9% of the time, which is about 240 one-frame moves per training run.
+Only 0.001% of these put the old adversary within 5 m of the new ego's start
+(about 0.05 per run). One run crashed on a cyclist. The other 16 runs are
+kept.
+
 ### Comparing policies: aggressive and timid, and whose fault the collisions were
 
 Responsibility has two directions. β_s > 0 is aggressive: the agent kept

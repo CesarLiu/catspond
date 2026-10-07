@@ -153,3 +153,10 @@ def test_the_plan_is_applied_at_the_scene_step():
     held = np.array(StepAlignedPlan(rows, env))
     assert held[:3, 0].tolist() == [2, 2, 2] and held[5, 0] == 4 and held[5, 2] == 0.0
     assert held[6:, 0].tolist() == list(range(6, 91))
+    # once the env has moved to another scenario the plan is over: the traffic manager,
+    # which keeps it until after the next reset, must not apply it there
+    env = SimpleNamespace(engine=SimpleNamespace(episode_step=0), current_seed=7)
+    plan = StepAlignedPlan(rows, env)
+    assert len(plan) == 91 and plan
+    env.current_seed = 8
+    assert len(plan) == 0 and not plan

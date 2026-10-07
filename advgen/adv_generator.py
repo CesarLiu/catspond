@@ -97,7 +97,16 @@ class StepAlignedPlan(list):
 
     Rows of history steps the log has no state for (zeros: before the
     adversary appears, or a gap) hold it at the nearest logged state,
-    instead of putting it at the origin."""
+    instead of putting it at the origin.
+
+    The plan belongs to the scenario it was made in: once the env has moved
+    to another one its length is 0. The traffic manager applies a plan while
+    ``len(adv_traj)`` is not 0 and keeps it until the next set_adv_info,
+    which comes only after env.reset(); a plan whose rows are never popped
+    would otherwise also drive whatever object of the next scenario has the
+    adversary's name in the reset's first step -- moved to the old plan's
+    row, or, for a cyclist (not in the manager's v_map), a KeyError that
+    stopped a training run."""
 
     def __init__(self, rows, env):
         rows = np.array(rows, dtype=float)
@@ -110,6 +119,12 @@ class StepAlignedPlan(list):
             rows[pad, 2:4] = 0.0  # held in place
         super().__init__(rows)
         self.env = env
+        self.scenario = getattr(env, "current_seed", None)
+
+    def __len__(self):
+        if getattr(self.env, "current_seed", None) != self.scenario:
+            return 0
+        return super().__len__()
 
     def pop(self, index=-1):
         return self[min(max(self.env.engine.episode_step - 1, 0), len(self) - 1)]
