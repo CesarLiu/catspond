@@ -52,6 +52,8 @@ mem_gb=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
 by_mem=$(( (mem_gb - 4) * 10 / 45 ))
 PARALLEL=${PARALLEL:-$(( by_mem < $(nproc) ? by_mem : $(nproc) ))}
 [ "$PARALLEL" -ge 1 ] || PARALLEL=1
+# the environment must be active (runbook step 7): a run started without it fails at once with exit 127
+python -c "import torch, metadrive" 2>/dev/null || { echo "python cannot import torch and metadrive: activate the environment first" >&2; exit 1; }
 
 FAIR="--adv_selection fair --resp_threshold 2 --resp_avoid 0.1"
 ABL="--adv_selection fair --resp_threshold inf --resp_avoid 0.5"

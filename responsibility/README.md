@@ -711,13 +711,34 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   - **Why little changes.** Within the 2 s metric horizon (the paper's T_f, 20
     steps of 0.1 s on nuScenes), alternatives with another intent have not
     yet left the route: their median distance from the logged path over 2 s
-    is 0.36 m. The filters make the set valid, but they cannot add what the
-    motion model does not predict: alternatives that brake when a neighbour
-    cuts in. The paper names this itself (Sec. VI-A): the motion set is
-    open-loop, and "controls do not change even after observing other agents'
-    future states". With SMART, catk's `--neighbor-future logged` lets the
-    alternatives react to the neighbours' logged motion step by step. That
-    needs no retraining; see `SMART_PLAN.md`.
+    is 0.36 m. The filters make the set valid, but they cannot add reactions
+    the motion model does not predict. The paper names this limit itself
+    (Sec. VI-A): the motion set is open-loop, and "controls do not change even
+    after observing other agents' future states". The next item tests
+    reactions directly.
+  - **Reactions (SMART, first 30 scenes, `logs/catk/trial30`).** catk's
+    `--neighbor-future logged` lets SMART's alternatives see the neighbours'
+    logged motion step by step, never ahead of time. It needs no retraining,
+    since SMART is autoregressive with 0.5 s tokens. Compared with the
+    open-loop `hidden` mode:
+
+    | | SDC | adversary |
+    |---|---|---|
+    | Spearman β_s | 0.93 | 0.93 |
+    | aggressive-flag κ | 0.65 | 0.58 |
+    | mean β_s | +0.074 m in both modes | +0.123 vs +0.120 m |
+
+    Where the logged SDC slowed by more than 2 m/s within the 2 s horizon
+    (20 windows), the alternatives that slowed by at least half as much were:
+
+    | | DenseTNT | SMART `hidden` | SMART `logged` |
+    |---|---|---|---|
+    | all 20 windows | 92% | 93% | 93% |
+    | the one sudden onset (scene 1, step 50) | 5% | 35% | 38% |
+
+    In the other windows the deceleration had already begun and shows in the
+    history, so the alternatives simply continue it. Within 2 s, the
+    neighbours' motion hardly changes what the alternatives do.
 
 ## Limitations
 
@@ -728,11 +749,12 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   agent's influence enters only through its recent past and current state.
 - Thresholds are relative to a reference population; the verdict is "unusual
   compared with that driving", not an absolute safety judgement.
-- The motion set lacks short-term reactions. Over the 2 s metric horizon,
-  DenseTNT's alternatives stay within 0.26 m (median ADE) of the logged future.
-  In the 403 windows where the logged driver braked by more than 2 m/s, only
-  4% of them braked as well. β_s therefore cannot show that braking would
-  have kept more distance. Filtering (above) does not change this.
+- Over the 2 s metric horizon, the alternatives stay close to the logged
+  future: DenseTNT's median ADE is 0.26 m. They continue a deceleration that
+  has begun, but rarely anticipate one that has not (see "Reactions" above).
+  An earlier version of this note said that only 4% brake where the driver
+  braked. That number counted alternatives braking harder than the driver,
+  not alternatives braking at all.
 - Window-level flags depend on the motion model: DenseTNT and SMART agree with
   κ 0.17–0.24 on the aggressive windows of the same scenes. Scene-level and
   aggregate results are more stable (Spearman 0.77–0.83 of the scene mean and
