@@ -550,6 +550,49 @@ measured against what the others actually do. Policies must therefore be
 compared under the same test adversary, which is what `comparison_seeds.md`'s
 matrices do.
 
+#### Trained policies (preliminary, 2026-10-07: 16 of 17 models)
+
+These are the results of `run_eval.sh` with `MODELS=models_eval`, on the 100
+test scenes with every model under four test adversaries
+(`logs/responsibility/eval/compare`). Each value is a mean ± std over seeds:
+three seeds each, except two for `cat_share` and one for the ablations.
+
+| training | crash, CAT adversary | of which ego / other fault | route completion, no adversary | route completion, CAT adversary | arrival, no adversary |
+|---|---|---|---|---|---|
+| TD3 replay | 42.0 ± 7.5% | 17.3 / 19.0% | 70.3 ± 4.7% | 63.5 ± 7.6% | 48.0% |
+| cat | 42.3 ± 5.0% | 15.0 / 22.0% | 66.5 ± 1.6% | 57.2 ± 3.3% | 46.3% |
+| cat_share (2 seeds) | 40.0 ± 1.4% | 19.5 / 15.5% | 69.7 ± 7.6% | 61.3 ± 4.1% | 49.0% |
+| cat_rss | 35.7 ± 2.5% | 13.3 / 21.0% | 68.2 ± 3.5% | 61.6 ± 4.8% | 48.3% |
+| cat_fair2_0.1 | 34.0 ± 4.4% | 16.8 / 12.8% | **76.5 ± 1.6%** | **71.9 ± 1.4%** | **56.3%** |
+| cat_fairinf_0.5 (1 seed) | 35.0% | 15.0 / 16.0% | 77.2% | 69.6% | 55.0% |
+| cat_fair2_0.1_share (1 seed) | 59.0% | 18.3 / 36.6% | 71.3% | 57.8% | 49.0% |
+
+The ego- and other-fault columns are the crash rate times the share of each
+verdict; shared verdicts make up the rest.
+
+- **The fair adversary is the one clear effect.** Against `cat` (Welch
+  t-test, 3 vs 3 seeds), route completion rises by 10.0 pp without an
+  adversary (p = 0.002) and by 14.7 pp against CAT's adversary (p = 0.008).
+  Collisions with CAT's adversary fall by 8.3 pp (p = 0.10). The fall comes
+  from collisions that are the other's fault (12.8 vs 22.0%); the ego-fault
+  collisions stay at 15–17%.
+- **CAT's training does not beat replay training.** Against CAT's adversary
+  the crash rates are 42.3 vs 42.0% (p = 0.95), and route completion is
+  lower (57.2 vs 63.5%).
+- **The weighted collision penalties show no significant effect.**
+  `cat_share` is −2.3 pp on crashes (p = 0.51) and `cat_rss` −6.7 pp
+  (p = 0.13). The collision penalty they weight is small: −1 a step, about 4
+  for a collision, against −10 and the end of the episode for leaving the
+  road.
+- **Behaviour profiles do not tell the settings apart.** Every TD3 policy has
+  25–34% aggressive windows (2.5–3.4× the log) and 4–8% timid ones (4–7×).
+- **The policies are weak overall.** Without an adversary they still collide
+  in 15–21% of episodes (with non-reacting logged traffic) and leave the road
+  in 28–37%.
+- **Single-seed ablations.** `cat_fairinf_0.5` matches the fair adversary,
+  which suggests avoidability matters more than β. `cat_fair2_0.1_share`
+  looks like an outlier (59% crashes). Both need more seeds.
+
 ### Training with a responsibility-weighted collision penalty
 
 In CAT's training environment a collision does not end the episode: at every
