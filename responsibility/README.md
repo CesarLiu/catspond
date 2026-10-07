@@ -644,27 +644,80 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
 - **D_g saturates at 10 m** and CVaR uses the upper-tail convention with
   α = 0.1 (close to the mean), as in catk (`responsibility/risk.py`).
 - **Valid counterfactuals (optional, `--valid-counterfactuals`).** β_s can be
-  taken over the valid part of the motion set only (`responsibility/motion_filter.py`).
-  The trajectories stay the motion model's; filters only remove some of them:
-  - **route:** the alternative stays within 2 m of the agent's logged route,
-    so its intent is unchanged and speed and timing stay free;
-  - **drivable:** it stays within 3 m of a vehicle lane centreline;
-  - **kinematics:** longitudinal acceleration stays within −9 to +5 m/s² and
-    lateral acceleration below 7 m/s²;
-  - **collision:** it does not drive through a third agent's logged future.
+  taken over the valid part of the motion set only
+  (`responsibility/motion_filter.py`, `responsibility/lanes.py`). The
+  trajectories stay the motion model's; the filters only remove some of them.
+  - **Same intent, judged by lanes (`--lane-route`).** The route is a set of
+    lanes, built in four steps:
+    1. Each logged position from step k on is matched to one lane: the closest
+       centreline within 2.5 m that runs within 45° of the agent's heading.
+    2. A lane counts once the agent has driven 5 m along it. Where a turn lane
+       branches off, it overlaps the straight lane for a metre or two, and a
+       car going straight passes it there. The lane the agent is on at k
+       always counts.
+    3. The left and right neighbours of these lanes are added, since a lane
+       change keeps the intent.
+    4. The chain of exit lanes after the last one is added for 100 m, taking
+       every branch, because where the agent goes after the log ends is
+       unknown.
+
+    DenseTNT's goal distribution is restricted to the goals within 2 m of
+    these lanes **before sampling**, and renormalised, so all 40 samples are
+    valid. 99% of its goal mass lies within 2 m of some lane centreline. A
+    model without goals has its trajectories' end points checked instead. An
+    agent the map does not cover is not restricted: on no lane at k or at its
+    last logged position, or on a lane for less than half of its logged
+    positions. Parking lots and driveways are the usual cases, and CAT's WOMD
+    v1.1 maps have no driveways.
+  - **Drivable area:** every point (every 0.5 s) is within 3 m of a vehicle
+    lane centreline.
+  - **Kinematics:** longitudinal acceleration stays within −9 to +5 m/s² and
+    lateral acceleration below 7 m/s², from 0.5 s-averaged speeds.
+  - **Collision:** the trajectory does not drive through a third agent's
+    logged future. b itself does not count, because its distance is what β_s
+    measures.
+  - **Courtesy (`--courtesy-valid-goals`):** the KL is taken over b's goals on
+    the lanes b can reach (its lanes, then their exit chain for 200 m, each
+    with neighbours), with both distributions renormalised there. There is no
+    restriction where less than half of b's goal mass lies on those lanes,
+    because then the map misses where b is going.
+  - **A path-based alternative to the lane route.** `--route-tolerance` keeps
+    the trajectories that stay within that many metres of the logged path,
+    which is extended 100 m along the last heading.
 
   `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
   probability-weighted, instead of 40 samples.
 
-  On the first 30 scenes (390 SDC windows, DenseTNT, `logs/filter_trial`), each
-  filter alone removes, in probability mass: route 23%, drivable 12%,
-  collision 1%, kinematics 0%. β_s hardly changes: Spearman 0.93 with the
-  unfiltered values, mean change −0.003 m (40 samples) and −0.009 m (weighted
-  grid); only 1% of windows drop by more than 0.5 m. Within the 2 s metric
-  horizon the alternatives that leave the route have not yet left it (their
-  median distance from the logged path over 2 s is 0.36 m). The filters make
-  the set valid, but they cannot add what the motion model does not predict:
-  alternatives that brake when a neighbour cuts in.
+  **Results on the first 30 scenes.** The runs cover 390 SDC windows with
+  DenseTNT (`logs/filter_trial`) and are compared with the unfiltered run of
+  the same seed.
+
+  | | β_s | β_c |
+  |---|---|---|
+  | Spearman with the unfiltered values | 0.96 | 0.99 |
+  | top-decile flags: agreement / κ | 0.995 / 0.94 | 0.985 / 0.91 |
+  | mean change | −0.002 m | −0.007 nats |
+
+  - **Lane route.** The goal mass on the route lanes has a median of 0.98 and
+    is below 0.9 in 21% of the windows; that is where the lane route filters
+    something out. The windows that changed most are scene 29 at step 10
+    (β_s +0.57 → +0.01 m) and scene 16 at step 35 (+1.27 → +0.93 m).
+  - **Each filter alone, as a share of probability mass.** These were measured
+    with the path-based route:
+    - route 23%
+    - drivable area 12%
+    - collision 1%
+    - kinematics 0%
+  - **Why little changes.** Within the 2 s metric horizon (the paper's T_f, 20
+    steps of 0.1 s on nuScenes), alternatives with another intent have not
+    yet left the route: their median distance from the logged path over 2 s
+    is 0.36 m. The filters make the set valid, but they cannot add what the
+    motion model does not predict: alternatives that brake when a neighbour
+    cuts in. The paper names this itself (Sec. VI-A): the motion set is
+    open-loop, and "controls do not change even after observing other agents'
+    future states". With SMART, catk's `--neighbor-future logged` lets the
+    alternatives react to the neighbours' logged motion step by step. That
+    needs no retraining; see `SMART_PLAN.md`.
 
 ## Limitations
 

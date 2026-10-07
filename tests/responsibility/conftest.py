@@ -36,11 +36,11 @@ def track(xy0, vel, heading=0.0, kind="VEHICLE", valid=None, length=4.8, width=2
     }
 
 
-def make_scene(tracks, sdc="0", ooi=("0", "1")):
+def make_scene(tracks, sdc="0", ooi=("0", "1"), map_features=None):
     description = {
         "id": "test",
         "tracks": {str(k): v for k, v in tracks.items()},
-        "map_features": {
+        "map_features": map_features or {
             "100": {"type": "LANE_SURFACE_STREET", "polyline": np.array([[0.0, 0, 0], [50, 0, 0], [100, 0, 0]])},
             "101": {"type": "STOP_SIGN", "position": np.array([5.0, 5.0, 0.0]), "lane": ["100"]},
         },

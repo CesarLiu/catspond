@@ -57,7 +57,8 @@ def test_weighted_motion_set_in_the_metric():
 
 def test_runs_made_before_model_choice_still_resume():
     off = asdict(MotionFilterConfig())
-    settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled", "filter": off}, "agent": "sdc",
+    settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled", "filter": off,
+                                   "courtesy_valid_goals": False}, "agent": "sdc",
                 "scenes": "/x", "model": {"name": "densetnt"}}
     old = {"responsibility": {"n_safety_samples": 40}, "agent": "sdc", "scenes": "/x"}
     assert same_settings(json.loads(json.dumps(old)), settings)
@@ -66,7 +67,7 @@ def test_runs_made_before_model_choice_still_resume():
     mtr = dict(settings, model={"name": "mtr", "checkpoint": "/c.ckpt", "method": "MTR_womd", "temperature": 1.0})
     assert not same_settings(old, mtr)
     assert not same_settings(old, dict(settings, responsibility={"n_safety_samples": 40, "motion_set": "weighted",
-                                                                 "filter": off}))
+                                                                 "filter": off, "courtesy_valid_goals": False}))
 
 
 def test_model_options():

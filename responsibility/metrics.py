@@ -34,7 +34,14 @@ never on anyone's future.
 With ``filter`` (responsibility.motion_filter), beta_s(a, b) is taken over
 the valid part of a's motion set only: same route, on the road,
 kinematically feasible, through no third agent. The per-neighbour entries
-then also hold "kept" and "kept_mass" (what survived).
+then also hold "kept" and "kept_mass" (what survived) and, with the lane
+route, "route_goal_mass" (the goal mass on a's route lanes).
+
+With ``courtesy_valid_goals``, the KL of beta_c(a, b) is taken over b's
+valid goals only -- those on the lanes b can reach from where it is
+(responsibility.lanes.reachable_lanes) -- both distributions renormalised
+there; "courtesy_goal_mass" holds the mass of b's distribution (with a)
+on them.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -45,11 +52,13 @@ import torch
 
 from responsibility.geometry import pairwise_min_distance_over_time
 from responsibility.interaction import InteractionConfig, interacting_neighbours
-from responsibility.motion_filter import MotionFilter, MotionFilterConfig
+from responsibility.lanes import reachable_lanes
+from responsibility.motion_filter import MotionFilter, MotionFilterConfig, goals_on_lanes, restrict_to_route
 from responsibility.risk import cvar
 from responsibility.scene import Scene
 
 FIRST_STEP = 10  # DenseTNT needs 10 steps of history before the current one
+MIN_VALID_GOAL_MASS = 0.5  # below this share on b's reachable lanes, courtesy is not restricted to them
 
 
 @dataclass
@@ -64,6 +73,7 @@ class ResponsibilityConfig:
     seed: int = 0
     motion_set: str = "sampled"  # or "weighted": the model's whole motion set, probability-weighted
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
+    courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
 
 
 @dataclass
@@ -155,9 +165,28 @@ def motion_set(model, dist, cfg: ResponsibilityConfig, generator: Optional[torch
     return trajs, log_prob, None
 
 
-def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor) -> float:
-    """KL(p || q) over a shared goal grid, in nats (clamped at 0 against rounding)."""
+def goal_kl(log_p: torch.Tensor, log_q: torch.Tensor, support: Optional[torch.Tensor] = None) -> float:
+    """KL(p || q) over a shared goal grid, in nats (clamped at 0 against
+    rounding); with ``support`` (bool [G]), over those goals only, both
+    distributions renormalised there."""
+    if support is not None:
+        log_p = log_p[support] - torch.logsumexp(log_p[support], 0)
+        log_q = log_q[support] - torch.logsumexp(log_q[support], 0)
     return max(0.0, float((log_p.exp() * (log_p - log_q)).sum()))
+
+
+def valid_goal_support(scene: Scene, b: int, step: int, dist, radius: float) -> Optional[torch.Tensor]:
+    """b's valid goals (bool [G]): those on the lanes b can reach, or None
+    (no restriction) for a model without goals, b on no lane, or less than
+    MIN_VALID_GOAL_MASS of b's goal mass on those lanes."""
+    if getattr(dist, "goals_global", None) is None:
+        return None
+    lanes = reachable_lanes(scene, b, step)
+    if lanes is None:
+        return None
+    on = torch.as_tensor(goals_on_lanes(dist, lanes, radius, scene), device=dist.log_prob.device)
+    # most of b's predicted mass off its lanes: the map misses where it goes (e.g. a driveway)
+    return on if float(dist.log_prob.exp()[on].sum()) >= MIN_VALID_GOAL_MASS else None
 
 
 def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: ResponsibilityConfig,
@@ -191,13 +220,17 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
         record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
                       neighbours=neighbours, courtesy={}, kept={})
     if neighbours:
+        route_mass = None
+        if cfg.filter.lane_route:  # a goal-based model: restrict its goals to a's route lanes before sampling
+            dist, route_mass = restrict_to_route(scene, agent, step, dist, cfg.filter)
         trajs, sample_log_prob, weights = motion_set(model, dist, cfg, generator)
         if record is not None:
             record["samples"], record["sample_log_prob"] = trajs, sample_log_prob
         samples = trajs[:, :horizon, :2]
         actual, actual_valid = scene.position[agent, fut, :2], scene.valid[agent, fut]
         valid_set = (MotionFilter(scene, agent, step, np.asarray(trajs)[..., :2], horizon, list(neighbours),
-                                  cfg.filter, weights) if cfg.filter.active else None)
+                                  cfg.filter, weights, goals_restricted=route_mass is not None)
+                     if cfg.filter.active else None)
         for b, evidence in neighbours.items():
             entry = dict(evidence, type=scene.types[b])
             s_b, w_b = samples, weights
@@ -205,6 +238,8 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
                 idx = valid_set.keep(b)
                 s_b, w_b = samples[idx], None if weights is None else weights[idx]
                 entry.update(valid_set.stats(idx))
+                if route_mass is not None:
+                    entry["route_goal_mass"] = round(route_mass, 4)
                 if record is not None:
                     record["kept"][b] = idx
             entry["safety"] = safety_responsibility(
@@ -213,7 +248,11 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
             if cfg.courtesy:
                 pair = model.with_and_without(scene, step, b, agent)
                 if pair is not None:
-                    entry["courtesy"] = goal_kl(pair[0].log_prob, pair[1].log_prob)
+                    support = (valid_goal_support(scene, b, step, pair[0], cfg.filter.lane_radius)
+                               if cfg.courtesy_valid_goals else None)
+                    entry["courtesy"] = goal_kl(pair[0].log_prob, pair[1].log_prob, support)
+                    if support is not None:
+                        entry["courtesy_goal_mass"] = round(float(pair[0].log_prob.exp()[support].sum()), 4)
                     if record is not None:
                         record["courtesy"][b] = pair
             per_neighbour[scene.track_ids[b]] = entry
