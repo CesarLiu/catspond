@@ -84,6 +84,8 @@ def parse_args():
     d = ResponsibilityConfig()
     live.add_argument("--stride", type=int, default=d.window_stride)
     live.add_argument("--n-samples", type=int, default=d.n_safety_samples)
+    live.add_argument("--use-ooi", action="store_true",
+                      help="Neighbours: the scenario's other objects of interest only (as compute_responsibility.py's).")
     live.add_argument("--motion-set", default=d.motion_set, choices=MOTION_SETS,
                       help="As compute_responsibility.py's; the video draws exactly the scored set.")
     live.add_argument("--horizon", type=int, default=d.metric_horizon)
@@ -103,11 +105,14 @@ def parse_args():
 def config_from(args) -> ResponsibilityConfig:
     if args.run is None:
         return ResponsibilityConfig(n_safety_samples=args.n_samples, metric_horizon=args.horizon,
-                                    window_stride=args.stride, seed=args.seed, motion_set=args.motion_set)
+                                    window_stride=args.stride, seed=args.seed, motion_set=args.motion_set,
+                                    use_ooi=args.use_ooi)
     saved = json.loads((Path(args.run) / "config.json").read_text())["responsibility"]
     saved["interaction"] = InteractionConfig(**saved["interaction"])
     if "filter" in saved:
         saved["filter"] = MotionFilterConfig(**saved["filter"])
+    if args.use_ooi and not saved.get("use_ooi", False):
+        raise SystemExit(f"{args.run} was computed without --use-ooi: drop --use-ooi or --run")
     return ResponsibilityConfig(**saved)
 
 

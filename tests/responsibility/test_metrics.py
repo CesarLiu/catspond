@@ -118,3 +118,21 @@ def test_scene_responsibility_covers_the_windows():
     obs = scene_responsibility(model, scene, cfg=cfg)
     assert [o.step for o in obs] == [10, 30, 50, 70]
     assert all(o.per_neighbour["1"]["courtesy"] is None for o in obs)
+
+
+def test_use_ooi_measures_the_objects_of_interest_only_in_every_window():
+    tracks = {
+        "0": track((0.0, 0.0), (10.0, 0.0)),  # the self-driving car
+        "1": track((0.0, 60.0), (0.0, 0.0)),  # the other object of interest, never interacting
+        "2": track((0.0, 4.0), (10.0, 0.0)),  # alongside, but not of interest
+    }
+    scene = make_scene(tracks, sdc="0", ooi=("0", "1"))
+    t = np.arange(1, 81) * 0.1
+    model = FakeModel(lambda n: np.repeat(np.stack([10 * t, np.zeros(80)], -1)[None], n, 0))
+    plain = scene_responsibility(model, scene, 0, ResponsibilityConfig(courtesy=False))
+    assert {tid for obs in plain for tid in obs.per_neighbour} == {"2"}
+    ooi = scene_responsibility(model, scene, 0, ResponsibilityConfig(courtesy=False, use_ooi=True))
+    assert ooi and all(set(obs.per_neighbour) == {"1"} for obs in ooi)
+    assert ooi[0].per_neighbour["1"]["min_gap"] > InteractionConfig().gap_threshold  # kept without evidence
+    with pytest.raises(ValueError, match="not an object of interest"):
+        scene_responsibility(model, scene, 2, ResponsibilityConfig(courtesy=False, use_ooi=True))

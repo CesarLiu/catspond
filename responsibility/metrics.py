@@ -34,6 +34,11 @@ vehicle neighbours; safety toward every neighbour.
 Both are open-loop: DenseTNT conditions on the 1.1 s of history up to k and
 never on anyone's future.
 
+The neighbours b are the agents interaction evidence selects
+(responsibility.interaction), or with ``use_ooi`` the scenario's other
+objects of interest, in every window, so that a scene is measured for one
+pair (a itself must be an object of interest).
+
 With ``filter`` (responsibility.motion_filter), beta_s(a, b) is taken over
 the valid part of a's motion set only: same route, on the road,
 kinematically feasible, through no third agent. The per-neighbour entries
@@ -54,7 +59,7 @@ import numpy as np
 import torch
 
 from responsibility.geometry import pairwise_min_distance_over_time
-from responsibility.interaction import InteractionConfig, interacting_neighbours
+from responsibility.interaction import InteractionConfig, interacting_neighbours, ooi_neighbours
 from responsibility.lanes import reachable_lanes
 from responsibility.motion_filter import MotionFilter, MotionFilterConfig, goals_on_lanes, restrict_to_route
 from responsibility.risk import cvar
@@ -80,6 +85,7 @@ class ResponsibilityConfig:
     motion_set: str = "sampled"
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
     courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
+    use_ooi: bool = False  # neighbours: the other objects of interest, always (one pair per scene)
 
 
 @dataclass
@@ -230,7 +236,8 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     dist = model.distribution(scene, step, agent)
     if dist is None:
         return None
-    neighbours = interacting_neighbours(scene, agent, step, horizon, cfg.interaction)
+    select = ooi_neighbours if cfg.use_ooi else interacting_neighbours
+    neighbours = select(scene, agent, step, horizon, cfg.interaction)
     fut = slice(step + 1, step + 1 + horizon)
     speed = float(np.linalg.norm(scene.velocity[agent, step]))
     per_neighbour: Dict[str, Dict[str, float]] = {}

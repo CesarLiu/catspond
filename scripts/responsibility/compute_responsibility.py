@@ -43,7 +43,9 @@ how much of the set was kept. It also takes beta_c over the neighbour's
 reachable goals only (--courtesy-valid-goals). On a map without lane topology
 (perception), --intent tells the same intent from the trajectories instead
 (responsibility/intent.py), and --drivable-edges judges the drivable area
-by road edges instead of lane centrelines (responsibility/edges.py). With DenseTNT, --motion-set weighted uses its whole goal
+by road edges instead of lane centrelines (responsibility/edges.py). --use-ooi measures the agent against the scenario's
+other object of interest only, in every window, instead of the neighbours
+interaction evidence selects. With DenseTNT, --motion-set weighted uses its whole goal
 grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
 goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
 goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
@@ -170,6 +172,9 @@ def parse_args():
     p.add_argument("--top-mass", type=float, default=0.99,
                    help="Goal distributions in records keep the most probable goals covering this mass.")
     i = InteractionConfig()
+    p.add_argument("--use-ooi", action="store_true",
+                   help="Neighbours: the scenario's other objects of interest in every window, whatever the "
+                        "interaction evidence (one pair per scene); --agent must be one of them (sdc or adv).")
     p.add_argument("--max-neighbors", type=int, default=i.max_neighbors)
     p.add_argument("--gap-threshold", type=float, default=i.gap_threshold)
     p.add_argument("--pet-threshold", type=float, default=i.pet_threshold)
@@ -182,7 +187,8 @@ def parse_args():
 
 # settings added after runs were made, with the value those runs used
 LATER_SETTINGS = {"model": {"name": "densetnt"}}
-LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig()), "courtesy_valid_goals": False}
+LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig()), "courtesy_valid_goals": False,
+                        "use_ooi": False}
 
 
 def same_settings(stored, settings) -> bool:
@@ -197,15 +203,19 @@ def same_settings(stored, settings) -> bool:
     return stored == json.loads(json.dumps(settings))
 
 
-def pick_agent(scene: Scene, which: str) -> int:
+def pick_agent(scene: Scene, which: str, use_ooi: bool = False) -> int:
     if which == "sdc":
-        return scene.sdc
-    if which == "adv":
+        agent = scene.sdc
+    elif which == "adv":
         others = [i for i in scene.objects_of_interest if i != scene.sdc]
         if not others:
             raise ValueError("no second object of interest")
-        return others[0]
-    return scene.index(which)
+        agent = others[0]
+    else:
+        agent = scene.index(which)
+    if use_ooi and agent not in scene.objects_of_interest:
+        raise ValueError(f"--use-ooi: agent {scene.track_ids[agent]} is not an object of interest")
+    return agent
 
 
 def main():
@@ -223,7 +233,7 @@ def main():
         filter=motion_filter, courtesy_valid_goals=args.courtesy_valid_goals or valid,
         n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha, motion_set=args.motion_set,
         d_sat=args.d_sat if args.d_sat > 0 else None, metric_horizon=args.horizon,
-        window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed,
+        window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed, use_ooi=args.use_ooi,
         interaction=InteractionConfig(max_neighbors=args.max_neighbors, gap_threshold=args.gap_threshold,
                                       pet_threshold=args.pet_threshold, ttc_threshold=args.ttc_threshold),
     )
@@ -273,7 +283,7 @@ def main():
             else:
                 scene = Scene.load(path)
             try:
-                agent = pick_agent(scene, args.agent)
+                agent = pick_agent(scene, args.agent, args.use_ooi)
             except ValueError as e:
                 print(f"{path.name}: skipped ({e})", flush=True)
                 observations = []

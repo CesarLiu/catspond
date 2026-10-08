@@ -98,3 +98,22 @@ def test_offline_rendering_from_a_record(tmp_path):
                                            ego_heatmap=True)
     assert gif.exists() and radius >= 30.0
     assert len(list((tmp_path / "video" / "frames").glob("t_*.png"))) == len(record["frames"])
+
+
+def test_live_settings_take_use_ooi_and_a_runs_filters(tmp_path):
+    import json
+    from dataclasses import asdict
+
+    import pytest
+
+    from responsibility.motion_filter import MotionFilterConfig
+
+    args = SimpleNamespace(run=None, n_samples=40, horizon=20, stride=5, seed=0, motion_set="sampled", use_ooi=True)
+    assert vis.config_from(args).use_ooi
+    cfg = ResponsibilityConfig(filter=MotionFilterConfig(drivable_edges=True))
+    (tmp_path / "config.json").write_text(json.dumps({"responsibility": asdict(cfg)}))
+    run = SimpleNamespace(**{**vars(args), "run": str(tmp_path)})
+    with pytest.raises(SystemExit, match="without --use-ooi"):
+        vis.config_from(run)
+    loaded = vis.config_from(SimpleNamespace(**{**vars(run), "use_ooi": False}))
+    assert isinstance(loaded.filter, MotionFilterConfig) and loaded.filter.drivable_edges

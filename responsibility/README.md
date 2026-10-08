@@ -63,7 +63,7 @@ Step 1 writes `windows.csv` (one row per scene and context step: β_s, β_c,
 speed, and the neighbour each maximum came from) and per-neighbour details in
 `obs/<scene>.pkl`; it is resumable. Useful flags: `--agent adv` (CAT's
 adversary) or a track id, `--stride`, `--n-samples`, `--d-sat`,
-`--no-courtesy` (3–10× faster).
+`--no-courtesy` (3–10× faster), `--use-ooi` (below).
 
 Step 2 flags a window when β_s or β_c exceeds a threshold and a scene when it
 has a flagged window, and writes `summary/scenes.csv`,
@@ -109,7 +109,8 @@ One frame per context step t_k (`frames/t_XXX.png`), stitched into
 
 It runs the same code as `compute_responsibility`, and `--run` takes that
 run's settings, so the numbers equal the run's `windows.csv`. Without `--run`,
-live mode takes `--motion-set` and `--n-samples` itself.
+live mode takes `--motion-set`, `--n-samples` and `--use-ooi` itself; with
+`--run`, `--use-ooi` is refused unless the run used it.
 
 ### Records: inspect and visualise a run offline
 
@@ -761,7 +762,13 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   neighbour's input).
 - **Neighbours by interaction evidence** (footprint gap ≤ 10 m, post-encroachment
   time ≤ 2 s, constant-velocity TTC ≤ 4 s over the metric horizon, within
-  50 m), as in catk, not a plain radius.
+  50 m), as in catk, not a plain radius. For a simplified evaluation,
+  `--use-ooi` (in `compute_responsibility` and in live visualisation)
+  measures the agent against the scenario's other objects of interest only,
+  in every window and whatever the evidence. Every one of CAT's 500 scenes
+  has two objects of interest, the self-driving car and the adversary, so
+  each scene is measured for that one pair. `--agent` must then be `sdc` or
+  `adv`. The interaction scores are still written per neighbour.
 - **Courtesy toward vehicles only.** CAT's DenseTNT predicts vehicles
   (`agent_type='vehicle'`); safety is measured toward every neighbour.
 - **D_g saturates at 10 m** and CVaR uses the upper-tail convention with
