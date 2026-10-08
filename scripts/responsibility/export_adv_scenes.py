@@ -23,7 +23,9 @@ predicted collision score, the adversary's beta and the ego's avoidability
 first step at which the plan's footprint overlaps the logged ego's (None: no
 overlap with the logged, non-reacting ego) and the smallest gap between
 the two footprints (m, circle covers; <= 0 is overlap).
-OUT/index.json holds the same per scene.
+OUT/<rule>.index.json, next to the folder, holds the same per scene: the
+folder holds only scenes, since MetaDrive asserts that every file in a scene
+folder is one (an index left inside by an older export is moved out).
 
 Example (from the repository root):
     python -m scripts.responsibility.export_adv_scenes --n 10 --out-dir adv_scenes
@@ -47,7 +49,7 @@ import torch  # noqa: E402
 
 from responsibility.adversarial import ResponsibleAdvGenerator, selection_name  # noqa: E402
 from responsibility.interaction import _footprint_gap  # noqa: E402
-from responsibility.scene import Scene, scene_files  # noqa: E402
+from responsibility.scene import Scene, scene_files, sidecar_index  # noqa: E402
 from scripts.responsibility.benchmark_advgen import fake_env  # noqa: E402
 
 FIRST_PLANNED = 11  # CAT's plan is the logged history up to step 10, then the generated future
@@ -92,6 +94,15 @@ def first_overlap(scene: Scene, a: int, b: int):
     return int(t[hit[0]]) if len(hit) else None
 
 
+def open_index(out: Path):
+    """(path, entries) of a rule folder's index, OUT/<rule>.index.json next
+    to it; an index an older export kept inside the folder is moved there."""
+    path = sidecar_index(out)
+    if (out / "index.json").exists() and not path.exists():
+        (out / "index.json").replace(path)
+    return path, (json.loads(path.read_text()) if path.exists() else {})
+
+
 def adversarial_description(description, adv_id: str, plan: np.ndarray):
     """A deep copy of the description with the adversary's track replaced
     from FIRST_PLANNED on by ``plan`` [91, 5] (x, y, vx, vy, yaw)."""
@@ -116,8 +127,7 @@ def main(argv=None):
     name = selection_name(gen.args) if args.rule != "cat" else "cat"
     out = Path(args.out_dir) / name
     out.mkdir(parents=True, exist_ok=True)
-    index_path = out / "index.json"
-    index = json.loads(index_path.read_text()) if index_path.exists() else {}
+    index_path, index = open_index(out)
     files = scene_files(args.scenes)[args.first:]
     files = files[: args.n] if args.n is not None else files
     for path in files:
@@ -146,7 +156,7 @@ def main(argv=None):
                 "first_overlap_with_logged_ego": first_overlap(adv_scene, adv_scene.index(adv_id), adv_scene.sdc),
                 "min_gap_with_logged_ego": round(float(gaps.min()), 3) if len(gaps) else None}
         adv_desc["metadata"]["adversary"] = info
-        tmp = out / f"{path.name}.tmp"
+        tmp = out.parent / f".{out.name}.{path.name}.tmp"  # outside: a stray file would stop MetaDrive
         with open(tmp, "wb") as f:
             pickle.dump(adv_desc, f)
         tmp.replace(out / path.name)

@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np  # noqa: E402
 
-from responsibility.scene import Scene  # noqa: E402
+from responsibility.scene import Scene, sidecar_index  # noqa: E402
 
 
 def offline_plan(path: Path, adv_id: str) -> np.ndarray:
@@ -60,7 +60,10 @@ def main():
                     "data_directory": args.data, "num_scenarios": 500, "force_reuse_object_name": True,
                     "sequential_seed": True,
                     "vehicle_config": dict(show_navi_mark=False, show_dest_mark=False)})
-    index = json.loads((Path(args.offline) / "index.json").read_text())
+    index_path = sidecar_index(args.offline)
+    if not index_path.exists():  # an export made before the index moved out of the folder
+        index_path = Path(args.offline) / "index.json"
+    index = json.loads(index_path.read_text())
     rows, plans, sizes = [], {}, {}
     try:
         for i in args.scenes:

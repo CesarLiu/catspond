@@ -91,10 +91,10 @@ def scene_split(directory, first_test: int = TRAIN_SCENES) -> Tuple[int, int]:
 
 
 def index_path(directory) -> Path:
-    """Where swap_roles.py writes a swapped directory's index: next to it,
-    since MetaDrive reads every file inside."""
-    directory = Path(directory)
-    return directory.with_name(directory.name + ".index.json")
+    """Where swap_roles.py writes a swapped directory's index (scene.sidecar_index)."""
+    from responsibility.scene import sidecar_index
+
+    return sidecar_index(directory)
 
 
 def is_swapped(directory) -> bool:

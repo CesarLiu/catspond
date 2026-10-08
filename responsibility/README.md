@@ -391,10 +391,14 @@ the result as data.
 - **Where it goes.** The files are `OUT/<rule>/<scene>.pkl`, named like
   `raw_scenes_500`, so `Scene.load`, `compute_responsibility.py`,
   `visualize_responsibility.py --scene` and MetaDrive read them as they are.
-- **What is recorded.** `metadata.adversary` and `OUT/<rule>/index.json`
-  hold the rule, the chosen candidate, its predicted collision score, the
-  adversary's β and the first step at which the plan overlaps the logged
-  ego.
+- **What is recorded.** `metadata.adversary` and `OUT/<rule>.index.json`
+  (next to the folder, which holds only scenes) hold the rule, the chosen
+  candidate, its predicted collision score, the adversary's β, the first
+  step at which the plan overlaps the logged ego and the smallest gap to
+  it. MetaDrive asserts that every file in a scene folder is a `.pkl`
+  file, so an index that an older export left inside the folder is moved
+  out when the export resumes into it, and `verify_adv_export` reads either
+  place.
 
 With `--rule cat` (500 scenes, `adv_scenes/cat`, about 1 s a scene on the
 GPU), the plan overlaps the logged ego in 476 scenes (95%). The first overlap
@@ -528,10 +532,6 @@ measured against the logged ego, and the scenes are replayed in MetaDrive
   realised gap is that of the policy's own trajectory, against which the
   candidates were not scored: CAT scores them against the ego's past
   rollouts.
-- **Exported folders and MetaDrive.** `export_adv_scenes` keeps
-  `index.json` inside the rule folder. MetaDrive asserts that every file in
-  a scene folder is a `.pkl` file, so copy the `.pkl` files out before
-  loading the folder there. That is how this table was measured.
 
 ## Driving policies (rollouts)
 
