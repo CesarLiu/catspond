@@ -438,6 +438,49 @@ adversary that was not there. Its own β_s toward the adversary is therefore
 often positive as well: in scene 0 it reaches 1.2 m at 3.5 s, because some
 of its alternatives would have kept more distance.
 
+### Swapping the ego and the adversary
+
+CAT takes the ego from `metadata.sdc_id` and the adversary from the other
+object of interest. MetaDrive spawns its ego vehicle, its route and the
+replay policy from the same track, and steers only replayed traffic as an
+adversary. So the roles are swapped in the scene data, not in advgen.
+`swap_roles` writes a copy of the scenes in which the other object of
+interest is the self-driving car (`sdc_id`, `sdc_track_index`) and the
+logged self-driving car is the adversary (`responsibility/swap.py`):
+
+```bash
+python -m scripts.responsibility.swap_roles --scenes raw_scenes_500 --out-dir raw_scenes_500_swapped
+python cat_advgen.py --scenes_dir raw_scenes_500_swapped                        # CAT's benchmark, roles swapped
+python cat_RLtrain.py --mode cat --scenes_dir raw_scenes_500_swapped --seed 0  # run name cat_swapped_...
+python -m scripts.responsibility.export_adv_scenes --scenes raw_scenes_500_swapped --out-dir adv_scenes_swapped
+python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500_swapped --use-ooi \
+    --out-dir logs/responsibility/swapped/sdc
+```
+
+- **Eligibility.** A scene is swapped only if the other object of interest
+  is a vehicle valid at every step, because MetaDrive spawns the ego at
+  step 0 and drives its whole logged route. 459 of the 500 scenes qualify.
+  In 24 the other object is missing at step 0, and in 17 its track has
+  gaps.
+- **Layout.** The swapped scenes keep their file names. The folder holds
+  only scenes, because MetaDrive asserts that every file in it is one; the
+  index of swapped and skipped scenes is
+  `raw_scenes_500_swapped.index.json`, next to it.
+- **Train/test split.** `cat_RLtrain.py --scenes_dir` counts CAT's split
+  over the files present: scenes 0–399 train, 400 on test. That is 369 / 90
+  for the swapped folder. The evaluation runs once over the test scenes.
+- **Run names.** A swapped folder adds `_swapped` to the run name.
+- **Other scripts.** `cat_advgen.py --scenes_dir` runs over every scene in
+  the folder. The other scripts read any scene folder with `--scenes`.
+
+**Checked in MetaDrive** on this branch. On swapped scenes 0–2, the ego
+follows the new self-driving car's log exactly (0.00 m at step 20), and the
+original one is replayed traffic. In CAT's two-round generation on scenes
+0–5, every adversary is the original self-driving car. The attack hits
+4 of 6 swapped scenes and 6 of 6 original ones, too few scenes to compare
+rates. A 300-step `cat_RLtrain.py` run on the swapped folder ran as
+`cat_swapped_MDWaymo-seed99`.
+
 ## Driving policies (rollouts)
 
 The same measurements apply to a policy driving in MetaDrive. A **rollout**

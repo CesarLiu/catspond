@@ -76,6 +76,7 @@ The pipeline is: scene → motion model → metrics → per-run outputs → summ
   - `adversarial.make_adv_generator(parser)` adds `--adv_selection cat|constrained|penalized|fair` and returns a drop-in subclass of `advgen.AdvGenerator`. The `cat` rule must stay identical to CAT's.
   - `blame_reward.BlameWeighting` is used by `cat_RLtrain.py --blame_weighting share`.
   - Run and model names encode the settings (e.g. `cat_fair1_0.3_share_s0`), and `compare_policies` averages seeds by parsing the `_s<seed>` suffix.
+  - Swapping ego and adversary is a relabelling of the scenes (`swap.py`, `scripts/responsibility/swap_roles.py` → `raw_scenes_500_swapped`), read by `cat_advgen.py`/`cat_RLtrain.py --scenes_dir` (not `--data_dir`: advgen owns that name). A scene folder must hold only scene `.pkl` files: MetaDrive asserts it.
 
 Upstream CAT code is `advgen/`, `saferl_algo/`, `saferl_plotter/`, `cat_*.py` and the numbered `scripts/*.py`. Keep changes there minimal. `cat_RLtrain.py` is indented with tabs; match that when you edit it.
 

@@ -6,25 +6,29 @@ from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
 from metadrive.policy.replay_policy import ReplayEgoCarPolicy
 from advgen.adv_generator import AdvGenerator  # noqa: F401
 from responsibility.adversarial import make_adv_generator
+from responsibility.scene import scene_files
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--OV_traj_num', type=int,default=32)
     parser.add_argument('--AV_traj_num', type=int,default=1)
+    parser.add_argument('--scenes_dir', default='./raw_scenes_500',
+                        help='scene folder, e.g. raw_scenes_500_swapped (swap_roles.py: ego and adversary swapped)')
     adv_generator = make_adv_generator(parser)  # --adv_selection cat|constrained|penalized
 
     args = parser.parse_args()
 
     extra_args = dict(mode="top_down", film_size=(2200, 2200))
+    n_scenes = len(scene_files(args.scenes_dir))
 
     env = WaymoEnv(
             {
                 "agent_policy": ReplayEgoCarPolicy,
                 "reactive_traffic": False,
                 "use_render": False,
-                "data_directory": './raw_scenes_500',
-                "num_scenarios": 500,
+                "data_directory": args.scenes_dir,
+                "num_scenarios": n_scenes,
                 "force_reuse_object_name" :True,
                 "sequential_seed": True,
                 "vehicle_config":dict(show_navi_mark=False,show_dest_mark=False,)
@@ -34,7 +38,7 @@ if __name__ == '__main__':
     attack_cnt = 0
     time_cost = 0.
 
-    pbar = trange(500)
+    pbar = trange(n_scenes)
     for i in pbar:
 
       ######################## First Round : log the normal scenario ########################
