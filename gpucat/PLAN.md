@@ -159,6 +159,11 @@ GPUDrive 每个世界最多 64 个智能体，有 161 个场景超过这个数�
 这些在 `tests/responsibility/test_gpucat_geometry.py` 和 `test_gpucat_navigation.py` 里有测试。旧模型仍可以用 `navigation=False` 加载，`scripts/gpucat/diagnose_outcomes.py` 会按运行的 config.json 自动选择。
 
 **下次开机后要做的：**
-1. 用 `diagnose_outcomes.py --run logs/gpucat/runs/replay_s0` 统计旧模型的出界分别是哪种：路沿、黄线还是偏离路线。
-2. 开着导航观测重新训练 replay_s0，对比学习曲线。
+1. ~~用 `diagnose_outcomes.py` 统计旧模型的出界原因~~（2026-10-08 完成）。4.5M 步的模型在 100 个测试场景上，出界的 51 个场景里：
+   - **偏离路线 > 10 m：24 个**，中位数出现在第 27 步；
+   - 碰到路沿：21 个；
+   - 压到黄线：6 个，其中第 1–5 步就压到的有 3 个，可能是日志本身的误报。
+
+   出界原因主要是不知道路线，黄线是次要的。导航观测正好补上这一点。
+2. 开着导航观测重新训练 replay_s0，对比学习曲线（2026-10-08 18:34 开始，`logs/gpucat/runs/replay_nav_s0`）。
 3. 如果还是慢，再考虑把网络换成 GPUDrive 的 late-fusion 结构（按物体编码再做 max-pool）。现在是把 2,984 维直接拼起来送进 MLP。
