@@ -898,6 +898,28 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     with neighbours), with both distributions renormalised there. There is no
     restriction where less than half of b's goal mass lies on those lanes,
     because then the map misses where b is going.
+
+    **Without lane topology, leave β_c unrestricted.** The restriction needs
+    the exit chain of the lane graph. Two map-free stand-ins were measured
+    against it with DenseTNT on the first 30 scenes: every SDC window and
+    vehicle neighbour, 937 pairs, 730 of them with the HD support defined.
+    The stand-ins were (A) b's goals within D m of b's logged path, and (B)
+    b's goals within a forward cone of its heading. Both moved β_c further
+    from the HD values than no restriction does:
+
+    | β_c support | MAE | MAE on the top 10% | Spearman |
+    |---|---|---|---|
+    | none | 0.0039 nats | 0.018 nats | 0.996 |
+    | A, logged path ±8 m | 0.017 nats | 0.122 nats | 0.983 |
+    | A, logged path ±20 m | 0.0075 nats | 0.047 nats | 0.992 |
+    | B, forward cone 90° | 0.0067 nats | 0.030 nats | 0.982 |
+    | B, forward cone 120° | 0.0058 nats | 0.026 nats | 0.987 |
+
+    The HD support leaves out little: a median of 1.7% of b's goal mass, and
+    16.5% at the 90th percentile. A support around b's logged path does more
+    harm. It cuts away the goals of another intent, and those are exactly
+    where a's presence moves b's mass, so it hides the change that β_c
+    measures.
   - **A path-based alternative to the lane route.** `--route-tolerance` keeps
     the trajectories that stay within that many metres of the logged path,
     which is extended 100 m along the last heading.
