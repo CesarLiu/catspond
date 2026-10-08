@@ -405,9 +405,14 @@ class UniTrajModel:
         trajs = dist.trajectories_global()[idx.numpy()]
         return idx, dist.log_prob[idx], trajs
 
-    def motion_set(self, dist: IntentionDistribution) -> Tuple[np.ndarray, np.ndarray]:
-        """All K trajectories [K, T, 2] (scene frame) and their probabilities [K]."""
-        return dist.trajectories_global(), dist.log_prob.double().exp().numpy()
+    def motion_set(self, dist: IntentionDistribution, top_k: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """All K trajectories [K, T, 2] (scene frame) and their probabilities
+        [K], or with ``top_k`` the ``top_k`` most probable of them."""
+        trajs, probs = dist.trajectories_global(), dist.log_prob.double().exp().numpy()
+        if top_k is None or top_k >= len(probs):
+            return trajs, probs
+        keep = np.sort(np.argsort(-probs, kind="stable")[:top_k])
+        return trajs[keep], probs[keep]
 
 
 # ----------------------------------------------------------------------

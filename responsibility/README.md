@@ -805,7 +805,26 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     which is extended 100 m along the last heading.
 
   `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
-  probability-weighted, instead of 40 samples.
+  probability-weighted, instead of 40 samples. That set holds a median of 944
+  trajectories per window (P10 402, P90 2742, max 15568 over the 345 windows
+  with neighbours of `logs/filter_trial/weighted_filtered`), each completed
+  and filtered. `--motion-set topk` keeps the `--n-samples` most probable
+  goals instead, probability-weighted and renormalised over them. The top 40
+  hold a median 0.69 of the mass (P10 0.39). Offline, from the weighted run's
+  records, with the same filters re-applied to the top k, against the full
+  weighted β_s on 961 neighbour pairs:
+
+  | motion set | MAE β_s, all pairs | MAE on the 110 pairs with β_s > 0.05 m | largest error |
+  |---|---|---|---|
+  | top 40 | 0.014 m | 0.060 m | 1.00 m |
+  | top 100 | 0.008 m | 0.036 m | 0.91 m |
+  | top 200 | 0.004 m | 0.021 m | 0.65 m |
+  | 40 samples (`logs/filter_trial/filtered`) | 0.010 m | 0.035 m | 0.89 m |
+
+  The top 40 are deterministic but less accurate than 40 samples where β_s
+  matters: truncation drops the low-probability, slower executions that
+  `weighted` was added for. The top 200 cost about a fifth of the median
+  weighted set and are the most accurate of the cheap sets.
 
   **Results on the first 30 scenes.** The runs cover 390 SDC windows with
   DenseTNT (`logs/filter_trial`) and are compared with the unfiltered run of

@@ -38,8 +38,11 @@ class WeightedModel(FakeModel):
         super().__init__(lambda n: None, **kw)
         self.trajs, self.probs = trajs, probs
 
-    def motion_set(self, dist):
-        return self.trajs, self.probs
+    def motion_set(self, dist, top_k=None):
+        if top_k is None:
+            return self.trajs, self.probs
+        keep = np.sort(np.argsort(-self.probs, kind="stable")[:top_k])
+        return self.trajs[keep], self.probs[keep]
 
 
 def test_weighted_motion_set_in_the_metric():
@@ -53,6 +56,22 @@ def test_weighted_motion_set_in_the_metric():
     assert obs.safety == pytest.approx(0.75 * 3.0, abs=1e-4)  # the mean over the weighted set
     with pytest.raises(ValueError, match="finite motion set"):
         responsibility_at(FakeModel(lambda n: np.repeat(keep[None], n, 0)), scene, 0, 10, cfg)
+
+
+def test_top_k_motion_set_keeps_the_most_probable_and_renormalises():
+    scene = make_scene({"0": track((0, 0), (10, 0)), "1": track((0, 4.0), (10, 0))})  # alongside, 4 m
+    t = np.arange(1, 81) * 0.1
+    keep = np.stack([10 * t, np.zeros(80)], -1)  # what the ego did: C = 0
+    away = np.stack([10 * t, np.full(80, -3.0)], -1)  # C = +3
+    closer = np.stack([10 * t, np.full(80, 2.0)], -1)  # 2 m from the neighbour: C = -2
+    model = WeightedModel(np.stack([keep, away, closer]), np.array([0.2, 0.5, 0.3]))
+    cfg = ResponsibilityConfig(motion_set="topk", n_safety_samples=2, d_sat=None, cvar_alpha=0.0, courtesy=False)
+    obs = responsibility_at(model, scene, 0, 10, cfg)
+    assert obs.safety == pytest.approx((0.5 * 3.0 - 0.3 * 2.0) / 0.8, abs=1e-4)  # "keep" (0.2) is dropped
+    cfg.n_safety_samples = 40  # more than the set: all of it, as "weighted"
+    whole = responsibility_at(model, scene, 0, 10, ResponsibilityConfig(motion_set="weighted", d_sat=None,
+                                                                         cvar_alpha=0.0, courtesy=False))
+    assert responsibility_at(model, scene, 0, 10, cfg).safety == pytest.approx(whole.safety)
 
 
 def test_runs_made_before_model_choice_still_resume():

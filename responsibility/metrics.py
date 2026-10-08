@@ -12,7 +12,8 @@ xi_a / xi_b the logged futures, and the motion set N trajectories the motion
 model samples for a at k (DenseTNT: from its goal distribution) -- or, with
 ``motion_set="weighted"`` and a model with a finite motion set (UniTraj's MTR:
 64 intentions), all of them weighted by their probabilities, which makes the
-CVaR exact. beta_s > 0: most of what a
+CVaR exact; with ``motion_set="topk"``, the N most probable of them, weighted
+by their probabilities renormalised over the N. beta_s > 0: most of what a
 could have done would have kept more distance to b than what it actually
 did, so a gave up safety margin (drove more aggressively than its
 alternatives); beta_s <= 0: a kept at least as much distance as usual.
@@ -71,7 +72,7 @@ class ResponsibilityConfig:
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     courtesy: bool = True
     seed: int = 0
-    motion_set: str = "sampled"  # or "weighted": the model's whole motion set, probability-weighted
+    motion_set: str = "sampled"  # "weighted": the whole motion set; "topk": its n_safety_samples most probable
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
     courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
 
@@ -154,11 +155,15 @@ def safety_responsibility(samples: np.ndarray, actual: np.ndarray, actual_valid:
 def motion_set(model, dist, cfg: ResponsibilityConfig, generator: Optional[torch.Generator] = None):
     """The agent's motion set: (trajectories [N, T, 2], their log
     probabilities [N], weights [N] or None) -- N samples, or with
-    cfg.motion_set == "weighted" the model's whole, probability-weighted set."""
-    if cfg.motion_set == "weighted":
+    cfg.motion_set == "weighted" the model's whole, probability-weighted set,
+    or with "topk" its N most probable members, probability-weighted (the
+    weights are not renormalised here; weighted_cvar does that)."""
+    if cfg.motion_set in ("weighted", "topk"):
         if not hasattr(model, "motion_set"):
-            raise ValueError("motion_set='weighted' needs a model with a finite motion set (e.g. UniTraj's MTR)")
-        trajs, probs = model.motion_set(dist)
+            raise ValueError(f"motion_set='{cfg.motion_set}' needs a model with a finite motion set "
+                             "(e.g. UniTraj's MTR)")
+        trajs, probs = (model.motion_set(dist, top_k=cfg.n_safety_samples) if cfg.motion_set == "topk"
+                        else model.motion_set(dist))
         probs = np.asarray(probs, dtype=np.float64)
         return trajs, torch.as_tensor(np.log(np.clip(probs, 1e-300, None))), probs
     _, log_prob, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)

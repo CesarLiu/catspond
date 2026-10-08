@@ -246,16 +246,18 @@ class DenseTNT:
         trajs = self.complete(dist, dist.goals[idx.numpy()])
         return idx, dist.log_prob.cpu()[idx], trajs
 
-    def motion_set(self, dist: GoalDistribution, top_mass: float = 0.999):
+    def motion_set(self, dist: GoalDistribution, top_mass: float = 0.999, top_k: Optional[int] = None):
         """The whole goal distribution as a weighted motion set: every goal
         of the dense grid among the most probable ones covering ``top_mass``,
         completed (trajectories [G, 80, 2], scene frame), with its
         probability [G] (``--motion-set weighted``). Goals closer along the
         route stand for slower, braking executions, which 40 samples of a
-        peaked distribution rarely draw."""
+        peaked distribution rarely draw. With ``top_k``, the ``top_k`` most
+        probable goals instead (``--motion-set topk``): G is a median 944 on
+        the first 30 scenes, so this completes far fewer trajectories."""
         p = dist.log_prob.double().exp().cpu().numpy()
         order = np.argsort(-p, kind="stable")
-        n = int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1
+        n = top_k if top_k is not None else int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1
         keep = np.sort(order[:min(n, len(order))])
         return self.complete(dist, dist.goals[keep]), p[keep]
 
