@@ -6,6 +6,8 @@ conversion; this module only arranges the scenario for CAT's setting).
             second, every other object by its distance to the SDC at step
             10: GPUDrive keeps at most 64 agents a world (kMaxAgentCount), and
             CAT's scenes hold up to 129, so the ones it drops are the far ones
+  static    vehicles MetaDrive deems static are left out, as CAT runs
+            MetaDrive with no_static_vehicles (not the SDC or the adversary)
   control   every object but the SDC is marked as an expert, i.e. replayed
             from its log (CAT's MetaDrive setting: reactive_traffic False)
   adversary its goal is put GOAL_OFFSET metres away: GPUDrive takes any agent
@@ -15,7 +17,7 @@ conversion; this module only arranges the scenario for CAT's setting).
             into the simulator's trajectory tensor at run time
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -30,11 +32,23 @@ def cat_adversary(scene: Scene) -> Optional[int]:
     return others[0] if others else None
 
 
-def ego_only_scenario(scene: Scene, name: str) -> Dict:
-    """The GPUDrive scenario of a CAT scene, arranged as described above;
-    metadata gains ``adversary_id`` (None without a second object of
-    interest)."""
-    data = scenario(scene, name, (), experts=False)
+STATIC_THRESHOLD = 3.0  # m: MetaDrive's ScenarioTrafficManager.STATIC_THRESHOLD
+
+
+def is_static_vehicle(scene: Scene, i: int) -> bool:
+    """MetaDrive's test: a vehicle whose valid positions spread (std, the
+    larger of x and y) by at most STATIC_THRESHOLD; CAT runs with
+    no_static_vehicles, so MetaDrive never spawns these."""
+    pts = scene.position[i, scene.valid[i], :2]
+    return scene.types[i] == "VEHICLE" and len(pts) > 0 and float(np.std(pts, axis=0).max()) <= STATIC_THRESHOLD
+
+
+def agent_order(scene: Scene) -> List[int]:
+    """Scene agent indices in GPUDrive slot order: the SDC, CAT's adversary,
+    then the others by their distance to the SDC at step 10 (GPUDrive creates
+    the agents in the JSON's order, every one with init_mode all_objects, up
+    to 64). Static vehicles are left out, as CAT's MetaDrive setting
+    (no_static_vehicles) leaves them out; the SDC and the adversary never are."""
     adv = cat_adversary(scene)
     t0 = 10
     anchor = scene.position[scene.sdc, t0, :2]
@@ -46,9 +60,18 @@ def ego_only_scenario(scene: Scene, name: str) -> Dict:
         t = valid[np.argmin(np.abs(valid - t0))]
         return float(np.linalg.norm(scene.position[i, t, :2] - anchor))
 
-    rest = sorted((i for i in range(scene.n_agents) if i not in (scene.sdc, adv)), key=dist)
-    order = [scene.sdc] + ([adv] if adv is not None else []) + rest
-    objects = [data["objects"][i] for i in order]
+    rest = sorted((i for i in range(scene.n_agents)
+                   if i not in (scene.sdc, adv) and not is_static_vehicle(scene, i)), key=dist)
+    return [scene.sdc] + ([adv] if adv is not None else []) + rest
+
+
+def ego_only_scenario(scene: Scene, name: str) -> Dict:
+    """The GPUDrive scenario of a CAT scene, arranged as described above;
+    metadata gains ``adversary_id`` (None without a second object of
+    interest)."""
+    data = scenario(scene, name, (), experts=False)
+    adv = cat_adversary(scene)
+    objects = [data["objects"][i] for i in agent_order(scene)]
     for k, obj in enumerate(objects):
         obj["mark_as_expert"] = k != 0
     if adv is not None:
