@@ -1,10 +1,11 @@
-"""Same intent without lane topology: heading, lateral and road-edge tests."""
+"""Maps without lane topology: same intent (heading, lateral, road edges) and drivable area by road edges."""
 
 import json
 from dataclasses import asdict
 
 import numpy as np
 
+from responsibility.edges import crosses_road_edge
 from responsibility.intent import crosses_edge, same_heading
 from responsibility.motion_filter import MotionFilter, MotionFilterConfig
 from scripts.responsibility.compute_responsibility import same_settings
@@ -98,3 +99,31 @@ def test_runs_made_before_the_intent_filter_still_resume():
     with_intent = json.loads(json.dumps(settings))
     with_intent["responsibility"]["filter"]["intent"] = True
     assert not same_settings(json.loads(json.dumps(old)), with_intent)
+
+
+def road(edges=()):
+    """A lane centreline along y = 0 and the given road edges."""
+    f = {"100": {"type": "LANE_SURFACE_STREET", "polyline": np.array([[-50.0, 0, 0], [300.0, 0, 0]])}}
+    f.update({str(200 + i): {"type": "ROAD_EDGE_BOUNDARY", "polyline": np.asarray(e, float)} for i, e in enumerate(edges)})
+    return f
+
+
+def test_a_path_across_a_road_edge_is_not_drivable_unless_the_log_crosses_it_too():
+    curb = [[-50.0, 6.0, 0.0], [300.0, 6.0, 0.0]]
+    swerve = STRAIGHT + np.stack([np.zeros(81), np.clip(np.arange(81) / 30, 0, 1) * 9.0], -1)
+    trajs = np.stack([STRAIGHT, STRAIGHT + [0.0, 3.5], swerve])[:, 1:]
+    scene = make_scene({"0": track((0.0, 0.0), (10.0, 0.0)), "1": track((0.0, 200.0), (0.0, 0.0))},
+                       map_features=road([curb]))
+    assert crosses_road_edge(scene, 0, 10, trajs).tolist() == [False, False, True]
+    # the log turns into a driveway across the curb: that edge does not count
+    driveway = logged_scene(swerve, np.zeros(80), edges=[np.asarray(curb)])
+    assert not crosses_road_edge(driveway, 0, 10, trajs).any()
+    # a gap in the curb where the swerve crosses it: nothing is removed
+    gap = [[[-50.0, 6.0, 0.0], [10.0, 6.0, 0.0]], [[60.0, 6.0, 0.0], [300.0, 6.0, 0.0]]]
+    gappy = make_scene({"0": track((0.0, 0.0), (10.0, 0.0)), "1": track((0.0, 200.0), (0.0, 0.0))},
+                       map_features=road(gap))
+    assert not crosses_road_edge(gappy, 0, 10, trajs).any()
+    # the same as a MotionFilter filter
+    cfg = MotionFilterConfig(drivable_edges=True)
+    assert MotionFilter(scene, 0, 10, trajs, 20, [1], cfg).keep(1).tolist() == [0, 1]
+

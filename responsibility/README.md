@@ -852,6 +852,42 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     route keeps. That is why they are off by default. At a 2 s horizon the
     choice matters little in any case: even no restriction is within 0.01 m
     of the lane route on the pairs that matter.
+  - **Drivable area without centrelines (`--drivable-edges`,
+    `responsibility/edges.py`).** The drivable test above needs lane
+    centrelines, and a perceived map has none inside intersections. Here the
+    path is checked every 0.5 s from the agent's position, and the
+    trajectory must cross no `ROAD_EDGE_BOUNDARY` or `ROAD_EDGE_MEDIAN`. An
+    edge that the agent's own logged path crosses does not count (map noise,
+    or a driveway, which WOMD v1.1 lacks), and a gap in the edges removes
+    nothing.
+
+    **Measured on the first 30 scenes.** The reference is the centreline
+    test (3 m) on the HD map, over the weighted sets of
+    `logs/filter_trial/weighted_filtered` (345 windows, 930 SDC–neighbour
+    pairs, no other filter). A perception-like map is made from the HD one:
+    lane topology removed, and the centrelines of the 32% of lanes that cross
+    another lane at more than 30° (intersection connectors) removed. The
+    road edges are then cut into 10 m pieces, a share of them dropped, and
+    the rest jittered.
+
+    | drivable test | wrongly dropped | wrongly kept | MAE β_s | MAE, pairs > 0.05 m | largest error |
+    |---|---|---|---|---|---|
+    | centrelines, perceived map | 15.7% | 16.7% | 0.033 m | 0.087 m | 4.71 m |
+    | road edges (as in the HD map) | 1.3% | 36% | 0.0042 m | 0.026 m | 0.72 m |
+    | road edges, 30% dropped, 0.3 m noise | 1.2% | 51% | 0.0059 m | 0.035 m | 0.79 m |
+    | road edges, 60% dropped, 0.5 m noise | 1.3% | 66% | 0.0080 m | 0.037 m | 1.19 m |
+
+    "Wrongly dropped" is the share of the mass the reference keeps that the
+    test removes. "Wrongly kept" is the share of the mass the reference
+    removes that the test keeps. On a perceived map the centreline test
+    removes the alternatives that cross an intersection. The edge test
+    almost never removes too much, even with gaps and noise. It keeps road
+    surface that is more than 3 m from a lane centre (parking lanes,
+    shoulders), and whatever leaves through a gap. Combining the two did not
+    help. Keeping points within 3 m of a centreline, or farther than C from
+    every centreline, and also checking the edges, wrongly dropped 19–22%
+    of the mass for C = 4.5, 6 and 8 m: points just past the end of a
+    removed intersection lane fall between 3 m and C.
 
   `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
   probability-weighted, instead of 40 samples. That set holds a median of 944

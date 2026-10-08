@@ -38,10 +38,10 @@ from typing import Optional
 import numpy as np
 import torch
 
+from responsibility.edges import edge_segments, near_edges, segments_cross
 from responsibility.geometry import logged_route
 from responsibility.scene import Scene
 
-EDGE_TYPES = ("ROAD_EDGE_BOUNDARY", "ROAD_EDGE_MEDIAN")
 MIN_INTENT_PATH = 5.0  # m of logged path below which the heading shows no intent
 CHECK_EVERY = 10  # steps (1 s) between the edge checks
 MIN_MOVE = 0.1  # m per step below which a displacement's direction is noise (1 m/s)
@@ -109,16 +109,6 @@ def same_heading(scene: Scene, agent: int, step: int, trajs: np.ndarray, max_hea
     return np.abs(_wrap(alt - local)) <= np.deg2rad(max_heading)
 
 
-def edge_segments(scene: Scene, types=EDGE_TYPES) -> np.ndarray:
-    """The road edges of the map as segments [E, 2, 2] (none: [0, 2, 2])."""
-    out = []
-    for f in scene.map_features.values():
-        poly = np.asarray(f.get("polyline", []), dtype=float)
-        if f.get("type") in types and poly.ndim == 2 and len(poly) >= 2:
-            out.append(np.stack([poly[:-1, :2], poly[1:, :2]], axis=1))
-    return np.concatenate(out) if out else np.zeros((0, 2, 2))
-
-
 def nearest_on_polyline(points: torch.Tensor, polyline: torch.Tensor) -> torch.Tensor:
     """The nearest point [..., 2] of the polyline [P, 2] to each point [..., 2]."""
     if len(polyline) == 1:
@@ -129,22 +119,6 @@ def nearest_on_polyline(points: torch.Tensor, polyline: torch.Tensor) -> torch.T
     closest = start + t[..., None] * seg  # [..., S, 2]
     i = torch.linalg.norm(points[..., None, :] - closest, dim=-1).argmin(-1)
     return torch.gather(closest, -2, i[..., None, None].expand(*i.shape, 1, 2)).squeeze(-2)
-
-
-def _cross(a, b):
-    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
-
-
-def segments_cross(p: torch.Tensor, q: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
-    """Whether each segment p->q [Q] properly crosses any edge [E, 2, 2]."""
-    c, d = edges[:, 0], edges[:, 1]  # [E, 2]
-    r, s = (q - p)[:, None], (d - c)[None]  # [Q, 1, 2], [1, E, 2]
-    denom = _cross(r, s)  # [Q, E]
-    cp = c[None] - p[:, None]
-    t = _cross(cp, s) / denom  # inf or nan where parallel: masked below
-    u = _cross(cp, r) / denom
-    hit = (denom.abs() > 1e-12) & (t > 0) & (t < 1) & (u >= 0) & (u <= 1)
-    return hit.any(-1)
 
 
 def crosses_edge(scene: Scene, agent: int, step: int, trajs: np.ndarray,
@@ -164,11 +138,7 @@ def crosses_edge(scene: Scene, agent: int, step: int, trajs: np.ndarray,
                                            scene.position[agent, fut, :2][scene.valid[agent, fut]]]),
                            dtype=torch.float64)
     target = nearest_on_polyline(probe, path)
-    lo = torch.minimum(probe.reshape(-1, 2).amin(0), path.amin(0)) - 1.0
-    hi = torch.maximum(probe.reshape(-1, 2).amax(0), path.amax(0)) + 1.0
-    e = torch.as_tensor(edges, dtype=torch.float64)
-    inside = ((e.amin(1) <= hi) & (e.amax(1) >= lo)).all(-1)  # edges whose box overlaps the trajectories'
-    e = e[inside]
+    e = near_edges(edges, np.concatenate([probe.reshape(-1, 2).numpy(), path.numpy()]))
     if len(e) == 0:
         return np.zeros(len(trajs), dtype=bool)
     p, q = probe.reshape(-1, 2), target.reshape(-1, 2)

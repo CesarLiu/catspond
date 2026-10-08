@@ -42,7 +42,8 @@ responsibility/lanes.py); the per-neighbour observations then also record
 how much of the set was kept. It also takes beta_c over the neighbour's
 reachable goals only (--courtesy-valid-goals). On a map without lane topology
 (perception), --intent tells the same intent from the trajectories instead
-(responsibility/intent.py). With DenseTNT, --motion-set weighted uses its whole goal
+(responsibility/intent.py), and --drivable-edges judges the drivable area
+by road edges instead of lane centrelines (responsibility/edges.py). With DenseTNT, --motion-set weighted uses its whole goal
 grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
 goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
 goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
@@ -151,6 +152,9 @@ def parse_args():
                    help="m: keep only alternatives within this of the agent's logged route (same intent).")
     g.add_argument("--drivable-half-width", type=float, default=f.drivable_half_width,
                    help="m: keep only alternatives within this of a vehicle lane centreline.")
+    g.add_argument("--drivable-edges", action="store_true",
+                   help="Keep only alternatives whose path crosses no road edge (one the logged path crosses "
+                        "does not count); for a map built by perception, instead of --drivable-half-width.")
     g.add_argument("--kinematics", action="store_true", help="Keep only kinematically feasible alternatives.")
     g.add_argument("--collision-filter", action="store_true",
                    help="Drop alternatives that drive through a third agent's logged future.")
@@ -213,6 +217,7 @@ def main():
         intent_lateral=args.intent_lateral if args.intent_lateral > 0 else None, intent_edges=args.intent_edges,
         drivable_half_width=(args.drivable_half_width if args.drivable_half_width is not None
                              else (3.0 if valid else None)),
+        drivable_edges=args.drivable_edges,
         kinematics=args.kinematics or valid, collision=args.collision_filter or valid)
     cfg = ResponsibilityConfig(
         filter=motion_filter, courtesy_valid_goals=args.courtesy_valid_goals or valid,
