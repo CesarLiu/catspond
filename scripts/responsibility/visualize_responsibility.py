@@ -318,8 +318,17 @@ def draw_courtesy(axes, scene, agent, frame, map_groups, radius, horizon):
         # each panel on its own scale: a spread-out distribution would vanish next to a peaked one
         p = goals["prob"]
         keep = p > p.max() * 1e-3
+        inside = goals.get("in_support", np.ones(len(p), dtype=bool))  # the goals the KL was taken over
+        out = keep & ~inside
+        if out.any():  # left out of the KL (another drive mode, or unreachable): grey
+            ax.scatter(*goals["points"][out].T, c=np.log10(p[out]), cmap="Greys", vmin=np.log10(p.max()) - 4,
+                       vmax=np.log10(p.max()) + 1, s=5, linewidths=0, zorder=2)
+        keep &= inside
         pts = goals["points"][keep]
         ax.scatter(pts[:, 0], pts[:, 1], c=np.log10(p[keep]), cmap="Blues", s=5, linewidths=0, zorder=2)
+        if "support_mass" in goals:
+            ax.text(0.02, 0.02, f"in the KL: {goals['support_mass']:.0%} of the mass", transform=ax.transAxes,
+                    fontsize=6.5, va="bottom", bbox=dict(facecolor="white", alpha=0.8, lw=0))
         length, width = scene.shape_at(b, step)
         ax.add_patch(Polygon(box(centre, scene.heading[b, step], length, width), closed=True,
                              facecolor=NEIGHBOUR_COLOR, edgecolor="black", lw=0.5, zorder=4))
@@ -336,7 +345,9 @@ def draw_courtesy(axes, scene, agent, frame, map_groups, radius, horizon):
         ax.set_aspect("equal")
         ax.set_facecolor("#fbfbfb")
         ax.set_title(title, fontsize=8)
-    axes[0].text(1.0, 1.13, f"courtesy: goals of vehicle {c_id} (blue), KL = {value:.3f} nats",
+    restricted = "in_support" in pair["with"]
+    axes[0].text(1.0, 1.13, f"courtesy: goals of vehicle {c_id} (blue"
+                 + (", grey: left out of the KL" if restricted else "") + f"), KL = {value:.3f} nats",
                  transform=axes[0].transAxes, ha="center", fontsize=8.5)
 
 

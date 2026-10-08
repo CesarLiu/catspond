@@ -266,8 +266,10 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     visualisation): "distribution" (the agent's goal distribution),
     "samples" [N, 80, 2] and "sample_log_prob" [N] (None without neighbours),
     "horizon", "neighbours" {index: evidence}, "courtesy" {neighbour
-    index: (distribution with, without the agent)} and, with a filter,
-    "kept" {neighbour index: indices of the samples beta_s used}."""
+    index: (distribution with, without the agent)}, "courtesy_support"
+    {neighbour index: the goals the KL was taken over (bool [G]) or None}
+    and, with a filter, "kept" {neighbour index: indices of the samples
+    beta_s used}."""
     horizon = effective_horizon(scene, step, cfg)
     if horizon == 0:
         return None
@@ -281,7 +283,7 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     per_neighbour: Dict[str, Dict[str, float]] = {}
     if record is not None:
         record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
-                      neighbours=neighbours, courtesy={}, kept={})
+                      neighbours=neighbours, courtesy={}, courtesy_support={}, kept={})
     if neighbours:
         route_mass = None
         if cfg.filter.lane_route:  # a goal-based model: restrict its goals to a's route lanes before sampling
@@ -322,6 +324,7 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
                         entry["courtesy_goal_mass"] = round(float(pair[0].log_prob.exp()[support].sum()), 4)
                     if record is not None:
                         record["courtesy"][b] = pair
+                        record["courtesy_support"][b] = support
             per_neighbour[scene.track_ids[b]] = entry
     safety = max((v["safety"] for v in per_neighbour.values()), default=0.0)
     courtesy = max((v["courtesy"] for v in per_neighbour.values() if v["courtesy"] is not None), default=0.0)

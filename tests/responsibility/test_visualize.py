@@ -146,3 +146,20 @@ def test_live_mode_loads_the_model_once_and_swaps_the_objects_of_interest(tmp_pa
     assert sdc["agent_id"] == "0" and adv["agent_id"] == "1"
     neighbours = [set(f["observation"]["per_neighbour"]) for f in adv["frames"]]
     assert neighbours and all(n == {"0"} for n in neighbours)  # the roles swapped
+
+
+def test_records_mark_the_goals_a_restricted_courtesy_kl_was_taken_over(tmp_path):
+    cfg = ResponsibilityConfig(window_stride=20, courtesy_same_mode="path", courtesy_path_lateral=2.0)
+    _, record = run_scene(GoalModel(), _scene(), 0, cfg)
+    pairs = [pair for f in record["frames"] for pair in f["courtesy"].values()]
+    assert pairs
+    for pair in pairs:
+        for side in ("with", "without"):
+            inside = pair[side]["in_support"]
+            assert inside.dtype == bool and len(inside) == len(pair[side]["prob"])
+        assert 0.0 < pair["with"]["support_mass"] < 1.0  # a 2 m band leaves part of the goals out
+    plain = run_scene(GoalModel(), _scene(), 0, ResponsibilityConfig(window_stride=20))[1]
+    assert all("in_support" not in p["with"] for f in plain["frames"] for p in f["courtesy"].values())
+    save_record(record, tmp_path / "r.pkl")
+    (gif, _), _ = vis.render_record(load_record(tmp_path / "r.pkl"), tmp_path / "video")
+    assert gif.exists()
