@@ -481,6 +481,58 @@ original one is replayed traffic. In CAT's two-round generation on scenes
 rates. A 300-step `cat_RLtrain.py` run on the swapped folder ran as
 `cat_swapped_MDWaymo-seed99`.
 
+### Near misses instead of collisions
+
+`--adv_selection near` keeps CAT's generation, the same 32 DenseTNT
+candidates for the adversary, but chooses a near miss instead of a
+collision. For each candidate, gap_j is the smallest gap between the
+adversary's and the ego's footprints over the 8 s CAT plans. Each footprint
+is three circles, checked every 0.1 s, and gap_j is averaged over the ego
+trajectories by P(AV_i). The rule then works as follows:
+
+1. Drop every candidate that touches the ego, meaning CAT's own test
+   predicts a collision, or the gap to any ego trajectory is ≤ 0.
+2. Of the rest, take the most probable candidate whose gap is within
+   `--near_gap ± --near_tol` (m). Defaults: 1.0 ± 0.5.
+3. If no candidate is in that band, take the one closest to `--near_gap`.
+4. If every candidate collides, take the one with the largest gap.
+
+The circles are slightly larger than the car (0.28 m at the side of a
+4.8 × 2 m car), so gap_j understates the true gap a little.
+
+```bash
+python cat_advgen.py --adv_selection near --near_gap 1.0 --near_tol 0.5
+python cat_RLtrain.py --mode cat --adv_selection near --near_gap 1.0 --seed 0     # run name cat_near1_0.5_...
+python -m scripts.responsibility.export_adv_scenes --rule near --near_gap 1.0 --out-dir adv_scenes
+```
+
+**Measured on the first 30 scenes.** The adversary is planned against the
+logged ego, as in `export_adv_scenes`. Its closest approach is then
+measured against the logged ego, and the scenes are replayed in MetaDrive
+(logged ego, generated adversary):
+
+| rule | overlap | closest approach P10 / median / P90 | within target ± 0.5 m | ego collisions in MetaDrive | adversary β_s (median) |
+|---|---|---|---|---|---|
+| cat | 100% | −2.64 / −1.42 / −0.73 m | – | 23 / 30 | 3.40 m |
+| near 0.5 m | 0% | 0.18 / 0.61 / 1.45 m | 70% | 0 / 30 | 0.86 m |
+| near 1.0 m | 0% | 0.57 / 1.20 / 1.62 m | 77% | 0 / 30 | 0.34 m |
+| near 2.0 m | 0% | 0.83 / 1.84 / 2.27 m | 73% | 0 / 30 | −0.01 m |
+
+- **Outside the target band.** In 23–30% of the scenes no candidate falls
+  within the band. The closest one is taken, which accounts for the tails
+  of the gap distribution.
+- **Responsibility.** The farther the miss, the less responsible the
+  adversary: its safety responsibility goes from 3.40 m for CAT's
+  collisions to about 0 at 2 m.
+- **In training.** The ego is the policy, not the log, and it reacts. The
+  realised gap is that of the policy's own trajectory, against which the
+  candidates were not scored: CAT scores them against the ego's past
+  rollouts.
+- **Exported folders and MetaDrive.** `export_adv_scenes` keeps
+  `index.json` inside the rule folder. MetaDrive asserts that every file in
+  a scene folder is a `.pkl` file, so copy the `.pkl` files out before
+  loading the folder there. That is how this table was measured.
+
 ## Driving policies (rollouts)
 
 The same measurements apply to a policy driving in MetaDrive. A **rollout**
