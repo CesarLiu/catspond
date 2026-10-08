@@ -117,3 +117,30 @@ def test_live_settings_take_use_ooi_and_a_runs_filters(tmp_path):
         vis.config_from(run)
     loaded = vis.config_from(SimpleNamespace(**{**vars(run), "use_ooi": False}))
     assert isinstance(loaded.filter, MotionFilterConfig) and loaded.filter.drivable_edges
+
+
+def test_live_mode_loads_the_model_once_and_swaps_the_objects_of_interest(tmp_path, monkeypatch):
+    import pickle
+
+    import responsibility.models
+
+    scene = make_scene({"0": track((0.0, 0.0), (10.0, 0.0)), "1": track((30.0, 4.0), (10.0, 0.0))})
+    for stem in ("3", "5"):
+        with open(tmp_path / f"{stem}.pkl", "wb") as f:
+            pickle.dump(scene.to_description(), f)
+    loads = []
+
+    def load_model(args, device):
+        loads.append(device)
+        return GoalModel()
+
+    monkeypatch.setattr(responsibility.models, "load_model", load_model)
+    args = SimpleNamespace(scene=["3", "5"], scenes=str(tmp_path), agent=["sdc", "adv"], use_ooi=True, run=None,
+                           device="cpu", n_samples=8, horizon=20, stride=20, seed=0, motion_set="sampled")
+    records = list(vis.live_records(args))
+    assert [name for name, _ in records] == ["3_sdc", "3_adv", "5_sdc", "5_adv"]
+    assert loads == ["cpu"]  # once for all four
+    sdc, adv = records[0][1], records[1][1]
+    assert sdc["agent_id"] == "0" and adv["agent_id"] == "1"
+    neighbours = [set(f["observation"]["per_neighbour"]) for f in adv["frames"]]
+    assert neighbours and all(n == {"0"} for n in neighbours)  # the roles swapped
