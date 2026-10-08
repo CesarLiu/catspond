@@ -13,7 +13,9 @@ model samples for a at k (DenseTNT: from its goal distribution) -- or, with
 ``motion_set="weighted"`` and a model with a finite motion set (UniTraj's MTR:
 64 intentions), all of them weighted by their probabilities, which makes the
 CVaR exact; with ``motion_set="topk"``, the N most probable of them, weighted
-by their probabilities renormalised over the N. beta_s > 0: most of what a
+by their probabilities renormalised over the N; with ``motion_set="nms"``, N
+of them spread over the distribution by CAT's goal NMS, each weighted by the
+probability of the goals nearest to it (responsibility/modes.py). beta_s > 0: most of what a
 could have done would have kept more distance to b than what it actually
 did, so a gave up safety margin (drove more aggressively than its
 alternatives); beta_s <= 0: a kept at least as much distance as usual.
@@ -59,6 +61,7 @@ from responsibility.risk import cvar
 from responsibility.scene import Scene
 
 FIRST_STEP = 10  # DenseTNT needs 10 steps of history before the current one
+MOTION_SETS = ("sampled", "weighted", "topk", "nms")  # ResponsibilityConfig.motion_set
 MIN_VALID_GOAL_MASS = 0.5  # below this share on b's reachable lanes, courtesy is not restricted to them
 
 
@@ -72,7 +75,9 @@ class ResponsibilityConfig:
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     courtesy: bool = True
     seed: int = 0
-    motion_set: str = "sampled"  # "weighted": the whole motion set; "topk": its n_safety_samples most probable
+    # "weighted": the whole motion set; "topk": its n_safety_samples most probable; "nms": n_safety_samples
+    # spread by goal NMS (modes.py)
+    motion_set: str = "sampled"
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
     courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
 
@@ -157,7 +162,15 @@ def motion_set(model, dist, cfg: ResponsibilityConfig, generator: Optional[torch
     probabilities [N], weights [N] or None) -- N samples, or with
     cfg.motion_set == "weighted" the model's whole, probability-weighted set,
     or with "topk" its N most probable members, probability-weighted (the
-    weights are not renormalised here; weighted_cvar does that)."""
+    weights are not renormalised here; weighted_cvar does that), or with
+    "nms" N members spread by CAT's goal NMS, each weighted by the
+    probability nearest to it (responsibility/modes.py)."""
+    if cfg.motion_set == "nms":
+        if not hasattr(model, "nms_motion_set"):
+            raise ValueError("motion_set='nms' needs a model with an NMS motion set (DenseTNT or UniTraj's MTR)")
+        trajs, weights = model.nms_motion_set(dist, cfg.n_safety_samples)
+        weights = np.asarray(weights, dtype=np.float64)
+        return trajs, torch.as_tensor(np.log(np.clip(weights, 1e-300, None))), weights
     if cfg.motion_set in ("weighted", "topk"):
         if not hasattr(model, "motion_set"):
             raise ValueError(f"motion_set='{cfg.motion_set}' needs a model with a finite motion set "

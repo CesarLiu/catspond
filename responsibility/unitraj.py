@@ -15,6 +15,8 @@ The metrics (responsibility.metrics, .blame) need three things of a model:
   sample        intentions drawn from it, each with its trajectory
   motion_set    all 64 trajectories and their probabilities (for the exact,
                 probability-weighted safety CVaR)
+  nms_motion_set  n intentions spread by CAT's NMS rule over their endpoints,
+                weighted by the probability nearest to each (modes.py)
   with/without  the neighbour's inputs with the agent, and the same inputs with
                 the agent's slot masked out: the other agents, their slots and
                 the map are unchanged, and the 64 intentions are the same, so
@@ -51,6 +53,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from responsibility.modes import NMS_THRESHOLD, nms_select, speed_scale_factor
 from responsibility.scene import Scene
 
 REPO = Path(__file__).resolve().parents[1]
@@ -386,7 +389,9 @@ class UniTrajModel:
             return None
         if excluded:
             inst = self.inputs.without(inst, scene, excluded)
-        return self.distributions([inst])[0]
+        dist = self.distributions([inst])[0]
+        dist.extras["speed"] = float(np.linalg.norm(scene.velocity[target, step]))  # m/s, for the NMS threshold
+        return dist
 
     def with_and_without(self, scene: Scene, step: int, target: int, removed: int):
         """``target``'s intention distribution with and without ``removed``
@@ -413,6 +418,17 @@ class UniTrajModel:
             return trajs, probs
         keep = np.sort(np.argsort(-probs, kind="stable")[:top_k])
         return trajs[keep], probs[keep]
+
+    def nms_motion_set(self, dist: IntentionDistribution, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """``n`` of the intentions, spread by CAT's NMS rule over their
+        endpoints (7.2 m times the speed scale factor of the agent's speed),
+        and their weights [n] (the probability of the intentions nearest to
+        each; ``--motion-set nms``)."""
+        if "speed" not in dist.extras:
+            raise ValueError("the NMS motion set needs the agent's speed: use a distribution from distribution()")
+        threshold = NMS_THRESHOLD * speed_scale_factor(dist.extras["speed"])
+        idx, weights = nms_select(dist.goals, dist.log_prob.double().exp().numpy(), n, threshold)
+        return dist.trajectories_global()[idx], weights
 
 
 # ----------------------------------------------------------------------

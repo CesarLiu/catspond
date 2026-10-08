@@ -97,8 +97,9 @@ One frame per context step t_k (`frames/t_XXX.png`), stitched into
 `opencv-python-headless`, which `setup_env.sh` installs). Each frame shows:
 
 - **scene:** the map, every agent at t_k with 1 s of history, the agent's
-  motion set (DenseTNT goal samples; the first 2 s solid, coloured by goal
-  probability), its logged future, and the neighbours it was compared with,
+  motion set exactly as β_s scored it (DenseTNT goal samples, or with
+  `--motion-set weighted|topk|nms` the weighted set; the first 2 s solid,
+  coloured by goal probability or weight), its logged future, and the neighbours it was compared with,
   with their logged futures. The neighbour behind β_s is outlined red, the one
   behind β_c blue. `--ego-heatmap` adds the agent's own goal distribution.
 - **courtesy:** that neighbour's goal distribution with the agent in the scene
@@ -107,7 +108,8 @@ One frame per context step t_k (`frames/t_XXX.png`), stitched into
   `--levels`, every window's level as background, aggressive levels hatched.
 
 It runs the same code as `compute_responsibility`, and `--run` takes that
-run's settings, so the numbers equal the run's `windows.csv`.
+run's settings, so the numbers equal the run's `windows.csv`. Without `--run`,
+live mode takes `--motion-set` and `--n-samples` itself.
 
 ### Records: inspect and visualise a run offline
 
@@ -116,7 +118,8 @@ run's settings, so the numbers equal the run's `windows.csv`.
 saves its `record.pkl`. A record holds the scene itself, plus, for every
 context step t_k:
 
-- the agent's motion set (samples [N, 80, 2] and their goal log-probabilities);
+- the agent's motion set (samples [N, 80, 2] and their goal log-probabilities,
+  or for a weighted set the log of each trajectory's weight);
 - its goal distribution;
 - each vehicle neighbour's goal distributions with and without the agent;
 - all values, per neighbour included.
@@ -820,11 +823,21 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   | top 100 | 0.008 m | 0.036 m | 0.91 m |
   | top 200 | 0.004 m | 0.021 m | 0.65 m |
   | 40 samples (`logs/filter_trial/filtered`) | 0.010 m | 0.035 m | 0.89 m |
+  | 40 by NMS (`--motion-set nms`, run) | 0.005 m | 0.015 m | 0.53 m |
 
   The top 40 are deterministic but less accurate than 40 samples where β_s
   matters: truncation drops the low-probability, slower executions that
-  `weighted` was added for. The top 200 cost about a fifth of the median
-  weighted set and are the most accurate of the cheap sets.
+  `weighted` was added for. `--motion-set nms` (`modes.py`) instead spreads
+  its `--n-samples` goals over the distribution with CAT's goal NMS (7.2 m
+  times CAT's speed scale factor, 0.5–1.0), fills up with the next most
+  probable goals when fewer survive, and weights each goal by the probability
+  of the grid goals nearest to it, so the weights sum to 1. It was run with
+  DenseTNT on the same 30 scenes and filters (on CPU, 10–19 s per scene). It
+  is the most accurate of the 40-trajectory sets, more accurate than the top
+  200: correlation 0.996 with the weighted β_s (40 samples: 0.981), the
+  β_s > 0.05 m flag agrees on 99.9% of the pairs, and the mean difference is
+  −0.001 m. MTR's adapter applies the same rule to its 64 intention
+  endpoints.
 
   **Results on the first 30 scenes.** The runs cover 390 SDC windows with
   DenseTNT (`logs/filter_trial`) and are compared with the unfiltered run of

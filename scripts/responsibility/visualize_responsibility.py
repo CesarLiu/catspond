@@ -49,7 +49,7 @@ from matplotlib.collections import LineCollection  # noqa: E402
 from matplotlib.patches import Patch, Polygon  # noqa: E402
 
 from responsibility.interaction import InteractionConfig  # noqa: E402
-from responsibility.metrics import ResponsibilityConfig  # noqa: E402
+from responsibility.metrics import MOTION_SETS, ResponsibilityConfig  # noqa: E402
 from responsibility.records import load_record, save_record, scene_of  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
@@ -83,6 +83,8 @@ def parse_args():
     d = ResponsibilityConfig()
     live.add_argument("--stride", type=int, default=d.window_stride)
     live.add_argument("--n-samples", type=int, default=d.n_safety_samples)
+    live.add_argument("--motion-set", default=d.motion_set, choices=MOTION_SETS,
+                      help="As compute_responsibility.py's; the video draws exactly the scored set.")
     live.add_argument("--horizon", type=int, default=d.metric_horizon)
     live.add_argument("--seed", type=int, default=d.seed)
     live.add_argument("--device", default=None, help="Default: cuda if available.")
@@ -100,7 +102,7 @@ def parse_args():
 def config_from(args) -> ResponsibilityConfig:
     if args.run is None:
         return ResponsibilityConfig(n_safety_samples=args.n_samples, metric_horizon=args.horizon,
-                                    window_stride=args.stride, seed=args.seed)
+                                    window_stride=args.stride, seed=args.seed, motion_set=args.motion_set)
     saved = json.loads((Path(args.run) / "config.json").read_text())["responsibility"]
     saved["interaction"] = InteractionConfig(**saved["interaction"])
     return ResponsibilityConfig(**saved)
@@ -177,7 +179,7 @@ def fit_radius(scene, agent, frames, horizon):
     return float(np.clip(need, 30.0, 90.0))
 
 
-def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap):
+def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap, weighted=False):
     step, obs = frame["step"], frame["observation"]
     centre = scene.position[agent, step, :2]
     ax.set_xlim(centre[0] - radius, centre[0] + radius)
@@ -231,7 +233,9 @@ def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap
     if len(logged) > 1:
         ax.plot(*logged.T, color="black", lw=1.6, ls="--", zorder=8)
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    ax.figure.colorbar(sm, ax=ax, fraction=0.035, pad=0.01).set_label("log p(goal) of sample", fontsize=7)
+    weighted = weighted and frame.get("metric_samples", True)  # display-only frames are always samples
+    ax.figure.colorbar(sm, ax=ax, fraction=0.035, pad=0.01).set_label(
+        "log weight of trajectory" if weighted else "log p(goal) of sample", fontsize=7)
     label = "motion set (2 s solid)" if frame.get("metric_samples", True) else "motion set (display only)"
     handles = [
         plt.Line2D([], [], color=cmap(0.8), lw=1.5, label=label),
@@ -334,13 +338,13 @@ def draw_timeline(ax, frames, n, levels):
     ax.grid(alpha=0.3)
 
 
-def render(scene, agent, frame, n, frames, map_groups, radius, horizon, levels, ego_heatmap):
+def render(scene, agent, frame, n, frames, map_groups, radius, horizon, levels, ego_heatmap, weighted=False):
     fig = plt.figure(figsize=(12, 8.2), dpi=100)
     grid = fig.add_gridspec(2, 3, width_ratios=[2.2, 1, 1], height_ratios=[3, 1.2], hspace=0.28, wspace=0.08)
     ax_scene = fig.add_subplot(grid[0, 0])
     ax_with, ax_without = fig.add_subplot(grid[0, 1]), fig.add_subplot(grid[0, 2])
     ax_time = fig.add_subplot(grid[1, :])
-    draw_scene(ax_scene, scene, agent, frame, map_groups, radius, horizon, ego_heatmap)
+    draw_scene(ax_scene, scene, agent, frame, map_groups, radius, horizon, ego_heatmap, weighted)
     draw_courtesy((ax_with, ax_without), scene, agent, frame, map_groups, radius, horizon)
     draw_timeline(ax_time, frames, n, levels)
     obs = frame["observation"]
@@ -369,13 +373,14 @@ def render_record(record, out_dir: Path, levels_csv=None, view_radius=None, ego_
     if not frames:
         raise ValueError("the record has no frames")
     horizon = record["config"]["metric_horizon"]
+    weighted = record["config"].get("motion_set", "sampled") != "sampled"  # colours are weights, not goal log p
     radius = view_radius or fit_radius(scene, agent, frames, horizon)
     levels = load_levels(levels_csv, record.get("scene_file", ""), record["agent_id"])
     groups = map_segments(scene)
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     images = []
     for n, frame in enumerate(frames):
-        image = render(scene, agent, frame, n, frames, groups, radius, horizon, levels, ego_heatmap)
+        image = render(scene, agent, frame, n, frames, groups, radius, horizon, levels, ego_heatmap, weighted)
         plt.imsave(out_dir / "frames" / f"t_{frame['step']:03d}.png", image)
         images.append(image)
     return write_video(images, out_dir, fps), radius

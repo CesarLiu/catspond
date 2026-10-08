@@ -42,7 +42,8 @@ responsibility/lanes.py); the per-neighbour observations then also record
 how much of the set was kept. It also takes beta_c over the neighbour's
 reachable goals only (--courtesy-valid-goals). With DenseTNT, --motion-set weighted uses its whole goal
 grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
-goals, probability-weighted.
+goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
+goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
 
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
@@ -70,7 +71,7 @@ from responsibility.blame import rollout_blame  # noqa: E402
 from responsibility.models import add_model_arguments, load_model, model_settings  # noqa: E402
 from responsibility.motion_filter import MotionFilterConfig  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
-from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
+from responsibility.metrics import MOTION_SETS, ResponsibilityConfig, scene_responsibility  # noqa: E402
 from responsibility.records import run_scene, save_record  # noqa: E402
 from responsibility.rollouts import (  # noqa: E402
     last_window_step,
@@ -124,10 +125,12 @@ def parse_args():
     d = ResponsibilityConfig()
     p.add_argument("--n-samples", type=int, default=d.n_safety_samples)
     p.add_argument("--cvar-alpha", type=float, default=d.cvar_alpha)
-    p.add_argument("--motion-set", default=d.motion_set, choices=["sampled", "weighted", "topk"],
+    p.add_argument("--motion-set", default=d.motion_set, choices=MOTION_SETS,
                    help="weighted: the model's whole motion set, probability-weighted "
                         "(densetnt: its goal grid up to 0.999 of the mass; mtr: its 64 intentions); "
-                        "topk: its --n-samples most probable members, probability-weighted.")
+                        "topk: its --n-samples most probable members, probability-weighted; "
+                        "nms: --n-samples members spread by CAT's goal NMS, each weighted by the "
+                        "probability nearest to it (responsibility/modes.py).")
     f = MotionFilterConfig()
     g = p.add_argument_group("valid counterfactuals for beta_s (responsibility/motion_filter.py)")
     g.add_argument("--lane-route", action="store_true",

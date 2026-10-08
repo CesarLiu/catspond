@@ -55,7 +55,8 @@ The pipeline is: scene → motion model → metrics → per-run outputs → summ
   - `distribution(scene, step, agent, excluded=(), ...)`, which returns `None` when the agent is not predicted;
   - `sample(dist, n, generator)`;
   - `with_and_without(scene, step, b, a)`;
-  - optionally `motion_set(dist, top_k=None)`, the exact weighted path (`--motion-set weighted`), or its `top_k` most probable members (`--motion-set topk`).
+  - optionally `motion_set(dist, top_k=None)`, the exact weighted path (`--motion-set weighted`), or its `top_k` most probable members (`--motion-set topk`);
+  - optionally `nms_motion_set(dist, n)`: n goals spread by CAT's goal NMS, each weighted by the probability nearest to it (`--motion-set nms`, `modes.py`).
   - `densetnt.py` wraps CAT's DenseTNT and reproduces its inputs exactly. It runs **one instance per forward pass**, because advgen's batching leaks padding into the attention.
   - `unitraj.py` adapts UniTraj's MTR without patching UniTraj (it crops windows and injects a `scenarionet` stand-in). Removing an agent is done with masks, not by deleting the track.
   - `tests/responsibility/conftest.py` has `FakeModel` and `make_scene`/`track` for synthetic tests.
