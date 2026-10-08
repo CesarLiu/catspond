@@ -108,7 +108,8 @@ def test_live_settings_take_use_ooi_and_a_runs_filters(tmp_path):
 
     from responsibility.motion_filter import MotionFilterConfig
 
-    args = SimpleNamespace(run=None, n_samples=40, horizon=20, stride=5, seed=0, motion_set="sampled", use_ooi=True)
+    args = SimpleNamespace(run=None, n_samples=40, horizon=20, stride=5, seed=0, motion_set="sampled", use_ooi=True,
+                           courtesy_same_mode=None)
     assert vis.config_from(args).use_ooi
     cfg = ResponsibilityConfig(filter=MotionFilterConfig(drivable_edges=True))
     (tmp_path / "config.json").write_text(json.dumps({"responsibility": asdict(cfg)}))
@@ -136,7 +137,8 @@ def test_live_mode_loads_the_model_once_and_swaps_the_objects_of_interest(tmp_pa
 
     monkeypatch.setattr(responsibility.models, "load_model", load_model)
     args = SimpleNamespace(scene=["3", "5"], scenes=str(tmp_path), agent=["sdc", "adv"], use_ooi=True, run=None,
-                           device="cpu", n_samples=8, horizon=20, stride=20, seed=0, motion_set="sampled")
+                           device="cpu", n_samples=8, horizon=20, stride=20, seed=0, motion_set="sampled",
+                           courtesy_same_mode=None)
     records = list(vis.live_records(args))
     assert [name for name, _ in records] == ["3_sdc", "3_adv", "5_sdc", "5_adv"]
     assert loads == ["cpu"]  # once for all four

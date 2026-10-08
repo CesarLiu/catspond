@@ -118,7 +118,8 @@ def test_nms_motion_set_in_the_metric():
 def test_runs_made_before_model_choice_still_resume():
     off = asdict(MotionFilterConfig())
     settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled", "filter": off,
-                                   "courtesy_valid_goals": False, "use_ooi": False}, "agent": "sdc",
+                                   "courtesy_valid_goals": False, "use_ooi": False,
+                                   "courtesy_same_mode": None, "courtesy_path_lateral": 6.0}, "agent": "sdc",
                 "scenes": "/x", "model": {"name": "densetnt"}}
     old = {"responsibility": {"n_safety_samples": 40}, "agent": "sdc", "scenes": "/x"}
     assert same_settings(json.loads(json.dumps(old)), settings)
@@ -128,7 +129,10 @@ def test_runs_made_before_model_choice_still_resume():
     assert not same_settings(old, mtr)
     assert not same_settings(old, dict(settings, responsibility={"n_safety_samples": 40, "motion_set": "weighted",
                                                                  "filter": off, "courtesy_valid_goals": False,
-                                                                 "use_ooi": False}))
+                                                                 "use_ooi": False, "courtesy_same_mode": None,
+                                                                 "courtesy_path_lateral": 6.0}))
+    assert not same_settings(old, dict(settings, responsibility=dict(settings["responsibility"],
+                                                                     courtesy_same_mode="path")))
     assert not same_settings(old, dict(settings, responsibility=dict(settings["responsibility"], use_ooi=True)))
 
 

@@ -84,6 +84,10 @@ python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 
   `--kinematics`, `--collision-filter` and `--courtesy-valid-goals`.
 - On a map built by perception (no lane topology), use
   `--intent --drivable-edges --kinematics --collision-filter` instead.
+- To take β_c only over the neighbour's own logged drive mode, add
+  `--courtesy-same-mode lanes` (HD map) or `--courtesy-same-mode path`
+  (no map needed; 6 m of its logged path). This overrides
+  `--courtesy-valid-goals`.
 - Motion sets: `sampled` (default), `weighted` (the reference; a median of
   944 trajectories per window), `topk`, `nms`.
 - MTR instead of DenseTNT: `--model mtr --checkpoint <ckpt>`.
@@ -899,7 +903,9 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     restriction where less than half of b's goal mass lies on those lanes,
     because then the map misses where b is going.
 
-    **Without lane topology, leave β_c unrestricted.** The restriction needs
+    **Without lane topology, drop `--courtesy-valid-goals`** rather than
+    approximate it (for b's own drive mode, see `--courtesy-same-mode`
+    below). The restriction needs
     the exit chain of the lane graph. Two map-free stand-ins were measured
     against it with DenseTNT on the first 30 scenes: every SDC window and
     vehicle neighbour, 937 pairs, 730 of them with the HD support defined.
@@ -920,6 +926,38 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     harm. It cuts away the goals of another intent, and those are exactly
     where a's presence moves b's mass, so it hides the change that β_c
     measures.
+  - **β_c within b's own drive mode (`--courtesy-same-mode`).**
+    `--courtesy-valid-goals` keeps every goal b can reach, so a change of
+    mode (straight → turn) still counts. `--courtesy-same-mode` keeps only
+    the goals of the mode b drove in the log, so β_c measures how a changes
+    b's plan within that mode. It has two versions:
+    - `lanes`: goals within 2 m of b's lane route, as `--lane-route` builds
+      it for the queried agent.
+    - `path`: goals within `--courtesy-path-lateral` (6 m) of b's logged
+      path, extended 100 m along its last heading. No map is needed.
+
+    There is no restriction where b's mode holds less than 0.1% of its goal
+    mass, since there is nothing to renormalise. The mass inside the
+    mode is written per neighbour as `courtesy_goal_mass`.
+
+    **Calibration of `path` against `lanes`**, on the 761 pairs above with b
+    on an HD lane route. DenseTNT puts a median 97.6% of b's mass on b's
+    own route (10th percentile 72.6%). The two are close in the median
+    (0.015 vs 0.016 nats unrestricted), but on the 10% of pairs with the
+    largest β_c the restriction changes β_c by 0.126 nats: these are the
+    pairs where a moves b's mass between modes.
+
+    | β_c support, against `lanes` | MAE | MAE on the top 10% | Spearman |
+    |---|---|---|---|
+    | none | 0.0165 nats | 0.126 nats | 0.986 |
+    | reachable (`--courtesy-valid-goals`) | 0.0121 nats | 0.101 nats | 0.992 |
+    | `path`, 3 m | 0.0170 nats | 0.099 nats | 0.950 |
+    | `path`, 6 m (default) | 0.0102 nats | 0.055 nats | 0.965 |
+    | `path`, 8 m | 0.0099 nats | 0.056 nats | 0.969 |
+
+    Inside 6 m, `path` keeps 86% of the mass on b's route and 47% of the
+    mass off it, which is goals on parallel lanes and just past the lanes'
+    reach. Beyond 6 m it stops improving.
   - **A path-based alternative to the lane route.** `--route-tolerance` keeps
     the trajectories that stay within that many metres of the logged path,
     which is extended 100 m along the last heading.

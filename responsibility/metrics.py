@@ -49,7 +49,12 @@ With ``courtesy_valid_goals``, the KL of beta_c(a, b) is taken over b's
 valid goals only -- those on the lanes b can reach from where it is
 (responsibility.lanes.reachable_lanes) -- both distributions renormalised
 there; "courtesy_goal_mass" holds the mass of b's distribution (with a)
-on them.
+on them. With ``courtesy_same_mode``, the KL is taken over the goals of b's
+own logged drive mode instead (same_mode_support): "lanes", those on b's
+lane route (responsibility.lanes.route_lanes, as --lane-route for a);
+"path", those within ``courtesy_path_lateral`` (m) of b's logged path, with
+no map needed. beta_c then measures how a changes b's plan within the mode
+b drove, not a change of mode.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -60,7 +65,8 @@ import torch
 
 from responsibility.geometry import pairwise_min_distance_over_time
 from responsibility.interaction import InteractionConfig, interacting_neighbours, ooi_neighbours
-from responsibility.lanes import reachable_lanes
+from responsibility.intent import distance_to_logged_path
+from responsibility.lanes import lane_graph, reachable_lanes, route_lanes
 from responsibility.motion_filter import MotionFilter, MotionFilterConfig, goals_on_lanes, restrict_to_route
 from responsibility.risk import cvar
 from responsibility.scene import Scene
@@ -68,6 +74,7 @@ from responsibility.scene import Scene
 FIRST_STEP = 10  # DenseTNT needs 10 steps of history before the current one
 MOTION_SETS = ("sampled", "weighted", "topk", "nms")  # ResponsibilityConfig.motion_set
 MIN_VALID_GOAL_MASS = 0.5  # below this share on b's reachable lanes, courtesy is not restricted to them
+MIN_MODE_MASS = 1e-3  # below this share in b's own drive mode there is nothing to renormalise: not restricted
 
 
 @dataclass
@@ -85,6 +92,8 @@ class ResponsibilityConfig:
     motion_set: str = "sampled"
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
     courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
+    courtesy_same_mode: Optional[str] = None  # beta_c over b's own drive mode: "lanes" (HD) or "path" (map-free)
+    courtesy_path_lateral: float = 6.0  # m from b's logged path, for courtesy_same_mode="path"
     use_ooi: bool = False  # neighbours: the other objects of interest, always (one pair per scene)
 
 
@@ -213,6 +222,35 @@ def valid_goal_support(scene: Scene, b: int, step: int, dist, radius: float) -> 
     return on if float(dist.log_prob.exp()[on].sum()) >= MIN_VALID_GOAL_MASS else None
 
 
+def goals_in_scene(dist) -> Optional[np.ndarray]:
+    """A goal distribution's goals [G, 2] in the scene frame (DenseTNT's
+    grid; MTR's intention end points), or None."""
+    goals = getattr(dist, "goals_global", None)
+    if goals is None and hasattr(dist, "goals") and hasattr(dist, "to_global"):
+        goals = dist.to_global(dist.goals)
+    return None if goals is None else np.asarray(goals)
+
+
+def same_mode_support(scene: Scene, b: int, step: int, dist, cfg: ResponsibilityConfig) -> Optional[torch.Tensor]:
+    """b's goals in its own logged drive mode (bool [G]), or None (no
+    restriction) for a model without goals, b on no lane ("lanes"), or less
+    than MIN_MODE_MASS of b's goal mass in that mode."""
+    goals = goals_in_scene(dist)
+    if goals is None:
+        return None
+    if cfg.courtesy_same_mode == "lanes":
+        lanes = route_lanes(scene, b, step)
+        if lanes is None:
+            return None
+        on = lane_graph(scene).near(goals, lanes, cfg.filter.lane_radius)
+    elif cfg.courtesy_same_mode == "path":
+        on = distance_to_logged_path(scene, b, step, goals) <= cfg.courtesy_path_lateral
+    else:
+        raise ValueError(f"courtesy_same_mode must be 'lanes' or 'path', not {cfg.courtesy_same_mode!r}")
+    on = torch.as_tensor(on, device=dist.log_prob.device)
+    return on if float(dist.log_prob.exp()[on].sum()) >= MIN_MODE_MASS else None
+
+
 def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: ResponsibilityConfig,
                       generator: Optional[torch.Generator] = None,
                       record: Optional[Dict] = None) -> Optional[Observation]:
@@ -273,8 +311,12 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
             if cfg.courtesy:
                 pair = model.with_and_without(scene, step, b, agent)
                 if pair is not None:
-                    support = (valid_goal_support(scene, b, step, pair[0], cfg.filter.lane_radius)
-                               if cfg.courtesy_valid_goals else None)
+                    if cfg.courtesy_same_mode:
+                        support = same_mode_support(scene, b, step, pair[0], cfg)
+                    elif cfg.courtesy_valid_goals:
+                        support = valid_goal_support(scene, b, step, pair[0], cfg.filter.lane_radius)
+                    else:
+                        support = None
                     entry["courtesy"] = goal_kl(pair[0].log_prob, pair[1].log_prob, support)
                     if support is not None:
                         entry["courtesy_goal_mass"] = round(float(pair[0].log_prob.exp()[support].sum()), 4)

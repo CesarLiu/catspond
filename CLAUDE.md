@@ -61,7 +61,7 @@ The pipeline is: scene → motion model → metrics → per-run outputs → summ
   - `unitraj.py` adapts UniTraj's MTR without patching UniTraj (it crops windows and injects a `scenarionet` stand-in). Removing an agent is done with masks, not by deleting the track.
   - `tests/responsibility/conftest.py` has `FakeModel` and `make_scene`/`track` for synthetic tests.
 - **`metrics.py`** computes the metrics at each context step k.
-  - `responsibility_at` / `scene_responsibility` compute β_s and β_c against neighbours chosen by interaction evidence (`interaction.py`), or with `--use-ooi` against the scenario's other object of interest only (one pair per scene).
+  - `responsibility_at` / `scene_responsibility` compute β_s and β_c against neighbours chosen by interaction evidence (`interaction.py`), or with `--use-ooi` against the scenario's other object of interest only (one pair per scene). β_c can be restricted to the goals b can reach (`--courtesy-valid-goals`) or to b's own logged drive mode (`--courtesy-same-mode lanes|path`).
   - β_s is a CVaR over the motion set of the closest-approach gap, saturated at 10 m. β_c is the exact KL over goals between a neighbour's prediction with and without the agent.
   - `geometry.py`, `risk.py` and `hmm.py` are **copied unchanged from catk** so both repos compute identical metrics. Do not edit them here.
 - **Run outputs** are read by `results.py`, `records.py` and `fit_levels`/`summarize`/`compare`:

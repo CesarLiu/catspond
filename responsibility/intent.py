@@ -39,7 +39,7 @@ import numpy as np
 import torch
 
 from responsibility.edges import edge_segments, near_edges, segments_cross
-from responsibility.geometry import logged_route
+from responsibility.geometry import lateral_deviation, logged_route
 from responsibility.scene import Scene
 
 MIN_INTENT_PATH = 5.0  # m of logged path below which the heading shows no intent
@@ -107,6 +107,19 @@ def same_heading(scene: Scene, agent: int, step: int, trajs: np.ndarray, max_hea
         return np.ones(len(trajs), dtype=bool)
     local = path_heading(torch.as_tensor(trajs[:, t_star - 1], dtype=torch.float64), path).numpy()
     return np.abs(_wrap(alt - local)) <= np.deg2rad(max_heading)
+
+
+def distance_to_logged_path(scene: Scene, agent: int, step: int, points: np.ndarray) -> np.ndarray:
+    """Distance [N] (m) of each point [N, 2] from the agent's logged path
+    from ``step`` on, extended 100 m along its last logged heading (for b's
+    own drive mode in beta_c: metrics.same_mode_support)."""
+    fut = slice(step + 1, scene.n_steps)
+    valid = scene.valid[agent, fut]
+    last = step + 1 + int(np.flatnonzero(valid).max()) if valid.any() else step
+    route = logged_route(torch.as_tensor(scene.position[agent, step, :2], dtype=torch.float64),
+                         torch.as_tensor(scene.position[agent, fut, :2], dtype=torch.float64), torch.as_tensor(valid),
+                         torch.tensor(float(scene.heading[agent, last]), dtype=torch.float64))
+    return lateral_deviation(torch.as_tensor(np.asarray(points, dtype=float), dtype=torch.float64), route).numpy()
 
 
 def nearest_on_polyline(points: torch.Tensor, polyline: torch.Tensor) -> torch.Tensor:

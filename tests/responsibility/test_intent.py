@@ -92,7 +92,8 @@ def test_runs_made_before_the_intent_filter_still_resume():
                   if not k.startswith("intent") and k not in ("lane_route", "lane_radius")}
     settings = {"responsibility": {"n_safety_samples": 40, "motion_set": "sampled",
                                    "filter": asdict(MotionFilterConfig(route_tolerance=2.0)),
-                                   "courtesy_valid_goals": False, "use_ooi": False},
+                                   "courtesy_valid_goals": False, "use_ooi": False,
+                                   "courtesy_same_mode": None, "courtesy_path_lateral": 6.0},
                 "agent": "sdc", "scenes": "/x", "model": {"name": "densetnt"}}
     old = {"responsibility": {"n_safety_samples": 40, "filter": old_filter}, "agent": "sdc", "scenes": "/x"}
     assert same_settings(json.loads(json.dumps(old)), settings)

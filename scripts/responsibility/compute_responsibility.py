@@ -45,7 +45,8 @@ reachable goals only (--courtesy-valid-goals). On a map without lane topology
 (responsibility/intent.py), and --drivable-edges judges the drivable area
 by road edges instead of lane centrelines (responsibility/edges.py). --use-ooi measures the agent against the scenario's
 other object of interest only, in every window, instead of the neighbours
-interaction evidence selects. With DenseTNT, --motion-set weighted uses its whole goal
+interaction evidence selects. --courtesy-same-mode lanes|path takes beta_c over
+the neighbour's goals in its own logged drive mode only. With DenseTNT, --motion-set weighted uses its whole goal
 grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
 goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
 goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
@@ -143,6 +144,11 @@ def parse_args():
                         "their side neighbours and what follows the log.")
     g.add_argument("--courtesy-valid-goals", action="store_true",
                    help="beta_c over the neighbour's goals on lanes it can reach only.")
+    g.add_argument("--courtesy-same-mode", choices=["lanes", "path"], default=d.courtesy_same_mode,
+                   help="beta_c over the neighbour's goals in its own logged drive mode only: on its lane route "
+                        "(lanes, HD map) or within --courtesy-path-lateral of its logged path (path, no map). "
+                        "Overrides --courtesy-valid-goals.")
+    g.add_argument("--courtesy-path-lateral", type=float, default=d.courtesy_path_lateral, help="m.")
     g.add_argument("--intent", action="store_true",
                    help="Same intent without lane topology (responsibility/intent.py), for perceived maps: "
                         "heading within --intent-heading of the logged path where the alternative is, "
@@ -188,7 +194,8 @@ def parse_args():
 # settings added after runs were made, with the value those runs used
 LATER_SETTINGS = {"model": {"name": "densetnt"}}
 LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig()), "courtesy_valid_goals": False,
-                        "use_ooi": False}
+                        "use_ooi": False, "courtesy_same_mode": None,
+                        "courtesy_path_lateral": ResponsibilityConfig().courtesy_path_lateral}
 
 
 def same_settings(stored, settings) -> bool:
@@ -231,6 +238,7 @@ def main():
         kinematics=args.kinematics or valid, collision=args.collision_filter or valid)
     cfg = ResponsibilityConfig(
         filter=motion_filter, courtesy_valid_goals=args.courtesy_valid_goals or valid,
+        courtesy_same_mode=args.courtesy_same_mode, courtesy_path_lateral=args.courtesy_path_lateral,
         n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha, motion_set=args.motion_set,
         d_sat=args.d_sat if args.d_sat > 0 else None, metric_horizon=args.horizon,
         window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed, use_ooi=args.use_ooi,
