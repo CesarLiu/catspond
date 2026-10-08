@@ -214,3 +214,19 @@ GPUDrive 每个世界最多 64 个智能体，有 161 个场景超过这个数�
 - **两套过滤下 β 的中位变化是 0：** 大多数场景不受影响，影响集中在 β 接近阈值的少数场景。
 
 **结论：** β_j 的计算本身正确，在大多数场景上对有效性过滤也稳健。但在 5–13% 的场景里，fair 的选择依赖于无效的备选。
+
+**决定（2026-10-08）：两个版本都训练。**
+- 先跑原版 fair（fair_nav_s0），它和 MetaDrive 的 `cat_fair2_0.1` 完全相同，用来检验结论能否复现；
+- 再跑 fair_valid（fair_valid_nav_s0）：β 只在对手的有效备选上取 CVaR，可避免性只用自车的有效采样。
+
+**fair_valid 的实现：**
+- `scripts/gpucat/precompute_valid.py` 为每个场景预先算好对手有效采样的掩码，以及按有效自车采样算的可避免性，写到 `logs/gpucat/valid_samples.npz`。500 个场景约 15 分钟；对手采样保留的中位数是 36/40，最少 1 条。
+- `gpucat/adversary.py` 的 `adversary_beta(..., sample_mask)` 只在掩码保留的采样上取 CVaR。
+- 训练用 `--mode fair_valid`。
+
+**核对：**
+- 在 GPU 上用日志路线算的选择，和 numpy 过滤后的选择一致 500/500；和原版 fair 有 67 个场景不同。
+- 测试 `test_beta_on_valid_samples_matches_numpy_on_the_subset` 覆盖掩码版 β。
+- 8 个世界的冒烟训练正常。
+
+**排队：** `logs/gpucat/queue_m3.sh` 等 cat_nav_s0 结束后，依次训练 fair_nav_s0 和 fair_valid_nav_s0，设置都相同（种子 0，5M 步，128 个世界）。

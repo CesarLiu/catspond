@@ -6,6 +6,9 @@
            training as in cat_RLtrain.py: an episode is adversarial with
            probability 1 - max(1 - 2 t / T (1 - min_prob), min_prob)
   fair     the fair adversary (--tau, --rho), on the same schedule
+  fair_valid  the fair adversary on valid alternatives only (beta over the
+           adversary's valid samples, avoidability over the ego's;
+           precompute_valid.py, --valid), on the same schedule
 
 Each iteration steps every world --horizon times (a world whose episode
 ends starts the next at once, adversarial with the current probability)
@@ -46,7 +49,7 @@ TEST = [str(i) for i in range(400, 500)]
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", choices=["replay", "cat", "fair"], default="cat")
+    p.add_argument("--mode", choices=["replay", "cat", "fair", "fair_valid"], default="cat")
     p.add_argument("--tau", type=float, default=2.0)
     p.add_argument("--rho", type=float, default=0.1)
     p.add_argument("--min-prob", type=float, default=0.1, help="CAT's min_prob.")
@@ -60,6 +63,7 @@ def parse_args(argv=None):
     p.add_argument("--scenes", default="logs/gpucat/scenes")
     p.add_argument("--static", default="logs/gpucat/static.npz")
     p.add_argument("--bank", default="logs/gpucat/candidates.npz")
+    p.add_argument("--valid", default="logs/gpucat/valid_samples.npz", help="fair_valid's inputs (precompute_valid.py).")
     p.add_argument("--out", required=True)
     return p.parse_args(argv)
 
@@ -112,7 +116,7 @@ def rollout(env, ppo, adversarial, rule, args, evaluation=False, deterministic=F
 
 
 def start_training_episodes(env, args, p_adv):
-    rule = "fair" if args.mode == "fair" else "cat"
+    rule = args.mode if args.mode in ("fair", "fair_valid") else "cat"
     adversarial = torch.rand(env.W, device=env.device) < p_adv
     return env.begin_episode(adversarial, rule, args.tau, args.rho, auto_reset=True, p_adv=p_adv)
 
@@ -144,7 +148,8 @@ def main(argv=None):
     torch.manual_seed(args.seed)
     es = EnvSettings(worlds=args.worlds, crash_penalty=args.crash_penalty)
     ps = PPOSettings()
-    env = CatEnv(es, REPO / args.scenes, REPO / args.static, REPO / args.bank)
+    env = CatEnv(es, REPO / args.scenes, REPO / args.static, REPO / args.bank,
+                 valid_path=REPO / args.valid if args.mode == "fair_valid" else None)
     rng = random.Random(args.seed)
     batch = rng.sample(TRAIN, args.worlds)
     env.load(batch)

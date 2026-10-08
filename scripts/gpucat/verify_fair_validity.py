@@ -29,9 +29,7 @@ verify_selection.py builds them).
 """
 
 import argparse
-import copy
 import json
-import pickle
 import sys
 from pathlib import Path
 
@@ -40,17 +38,10 @@ sys.path.insert(0, str(REPO))
 
 import numpy as np  # noqa: E402
 
-from responsibility.adversarial import (GENERATION_STEP, ResponsibleAdvGenerator, adversary_responsibility,  # noqa: E402
-                                        cat_adversary, cat_candidate_probs, cat_collision_scores, ego_avoidability,
-                                        select)
+from responsibility.adversarial import adversary_responsibility, cat_candidate_probs, cat_collision_scores, select  # noqa: E402
 from responsibility.metrics import ResponsibilityConfig  # noqa: E402
-from responsibility.motion_filter import MotionFilter, MotionFilterConfig  # noqa: E402
-from responsibility.scene import Scene  # noqa: E402
+from scripts.gpucat.precompute_valid import HORIZON, RHO, TAU, load_scene, make_generator, valid_sets  # noqa: E402
 from scripts.gpucat.verify_selection import histories  # noqa: E402
-
-TAU, RHO, HORIZON = 2.0, 0.1, 80
-ADV_FILTER = MotionFilterConfig(lane_route=True, drivable_half_width=3.0, kinematics=True, collision=True)
-EGO_FILTER = MotionFilterConfig(drivable_half_width=3.0, kinematics=True)
 
 
 def fair(score, min_dist, beta, avoid):
@@ -67,33 +58,17 @@ def main(argv=None):
     args = p.parse_args(argv)
     z = np.load(REPO / args.bank, allow_pickle=True)
     stems = list(z["stems"])[: args.n] if args.n else list(z["stems"])
-    gen = ResponsibleAdvGenerator(argparse.ArgumentParser(), argv=["--adv_selection", "fair", "--resp_threshold", str(TAU),
-                                                                  "--resp_avoid", str(RHO), "--resp_device", args.device])
+    gen = make_generator(args.device)
     cfg = ResponsibilityConfig(n_safety_samples=40)
     rng = np.random.default_rng(0)
     rows = []
-    for n, stem in enumerate(stems):
-        i = n
-        with open(REPO / args.scenes / f"{stem}.pkl", "rb") as f:
-            scene = Scene.from_description(copy.deepcopy(pickle.load(f)))
-        adv, ego, k = cat_adversary(scene), scene.sdc, GENERATION_STEP
+    for i, stem in enumerate(stems):
+        stem = str(stem)
         cand = z["candidates"][i].astype(np.float64)
         samples = z["samples"][i].astype(np.float64)
         ov = {"l": z["ov_size"][i][0], "w": z["ov_size"][i][1]}
         av = {"l": z["av_size"][i][0], "w": z["av_size"][i][1]}
-        # the adversary's valid alternatives
-        a_keep = MotionFilter(scene, adv, k, samples, HORIZON, [ego], ADV_FILTER).keep(ego)
-        # the ego's samples (the same stream as precompute_candidates.py) and its valid escapes
-        avoid_raw, ego_samples = gen.avoidability(scene, cand, ov, av, seed=int(stem))
-        if ego_samples is None:
-            e_keep = np.arange(0)
-            avoid_f = avoid_raw
-        else:
-            e_keep = MotionFilter(scene, ego, k, ego_samples, HORIZON, [], EGO_FILTER).keep()
-            avoid_f, _ = ego_avoidability(ego_samples[e_keep], cand,
-                                          (scene.position[ego, k, :2], float(scene.heading[ego, k])),
-                                          (scene.position[adv, k, :2], float(scene.heading[adv, k])),
-                                          av, ov, horizon=HORIZON)
+        a_keep, avoid_raw, avoid_f, e_keep = valid_sets(gen, load_scene(REPO / args.scenes, stem), z, i, stem)
         probs = cat_candidate_probs(z["log_scores"][i])
         row = {"scene": stem, "adv_kept": int(len(a_keep)), "ego_kept": int(len(e_keep)),
                "avoid_matches_bank": bool(np.allclose(avoid_raw, z["avoid"][i]))}
@@ -119,8 +94,8 @@ def main(argv=None):
                 "ok_both": int(((b_f <= TAU) & (avoid_f >= RHO)).sum()),
             }
         rows.append(row)
-        if (n + 1) % 25 == 0:
-            print(f"[{n + 1}/{len(stems)}]", flush=True)
+        if (i + 1) % 25 == 0:
+            print(f"[{i + 1}/{len(stems)}]", flush=True)
     out = REPO / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows))

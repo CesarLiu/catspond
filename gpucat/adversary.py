@@ -154,21 +154,31 @@ def candidate_probs(log_scores: torch.Tensor) -> torch.Tensor:
     return torch.softmax(s, dim=-1)
 
 
-def _cvar(x: torch.Tensor, alpha: float) -> torch.Tensor:
-    """risk.cvar on the last dim: the mean of the values >= the alpha-quantile."""
-    var = torch.quantile(x, alpha, dim=-1, keepdim=True)
-    tail = x >= var
-    tail = tail | (~tail.any(-1, keepdim=True) & (x == x.max(-1, keepdim=True).values))
+def _cvar(x: torch.Tensor, alpha: float, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """risk.cvar on the last dim: the mean of the values >= the alpha-quantile
+    -- over the entries where ``mask`` (broadcast to x) holds, if given, as
+    risk.cvar on that subset."""
+    if mask is None:
+        var = torch.quantile(x, alpha, dim=-1, keepdim=True)
+        mask = torch.ones_like(x, dtype=torch.bool)
+    else:
+        mask = mask.expand_as(x)
+        var = torch.nanquantile(torch.where(mask, x, torch.full_like(x, float("nan"))), alpha, dim=-1, keepdim=True)
+    tail = mask & (x >= var)
+    top = torch.where(mask, x, torch.full_like(x, -float("inf"))).max(-1, keepdim=True).values
+    tail = tail | (~tail.any(-1, keepdim=True) & mask & (x == top))
     return (x * tail).sum(-1) / tail.sum(-1).clamp(min=1)
 
 
 def adversary_beta(samples: torch.Tensor, cand: torch.Tensor, trajs_av: torch.Tensor, av_len: torch.Tensor,
                    probs_av: torch.Tensor, horizon: int = 80, d_sat: Optional[float] = 10.0,
-                   alpha: float = 0.1) -> torch.Tensor:
+                   alpha: float = 0.1, sample_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """beta [B, K]: per ego trajectory i, CVaR over the adversary's motion set
     samples [B, N, 80, 2] of D(sample, ego_i) - D(candidate j, ego_i), D the
     closest approach over the steps ego_i covers (saturated at d_sat), then
-    weighted by P(AV_i) normalised over the trajectories present."""
+    weighted by P(AV_i) normalised over the trajectories present. With
+    sample_mask [B, N], only the samples it keeps (the valid alternatives,
+    precompute_valid.py) enter the CVaR."""
     T = min(horizon, cand.shape[2])
     t = torch.arange(T, device=cand.device)
     valid = t[None, None, :] < av_len[:, :, None].clamp(max=T)  # [B, M, T]
@@ -180,7 +190,7 @@ def adversary_beta(samples: torch.Tensor, cand: torch.Tensor, trajs_av: torch.Te
         return d.clamp(max=d_sat) if d_sat is not None else d
 
     c = closest(samples)[:, :, None, :] - closest(cand)[..., None]  # [B, M, K, N]
-    beta = _cvar(c, alpha)  # [B, M, K]
+    beta = _cvar(c, alpha, None if sample_mask is None else sample_mask[:, None, None, :])  # [B, M, K]
     present = (av_len > 0).to(cand.dtype)
     w = probs_av * present
     w = torch.where(w.sum(-1, keepdim=True) > 0, w / w.sum(-1, keepdim=True).clamp(min=1e-12),
@@ -228,9 +238,12 @@ class CandidateBank:
     device: candidates [S, K, 80, 2], probs_ov [S, K], adv_past [S, 11, 2],
     ov_size / av_size [S, 2], ego_route [S, 80, 2], and for the fair rule the
     adversary's motion-set samples [S, N, 80, 2] and the ego avoidability of
-    each candidate [S, K]. ``index`` maps scene stem -> row."""
+    each candidate [S, K]. ``index`` maps scene stem -> row. With
+    ``valid_path`` (precompute_valid.py's .npz), also the fair_valid rule's
+    inputs: which samples are valid alternatives [S, N] and the avoidability
+    over the ego's valid samples [S, K]."""
 
-    def __init__(self, path: str, device: str = "cuda", dtype=torch.float32):
+    def __init__(self, path: str, device: str = "cuda", dtype=torch.float32, valid_path: Optional[str] = None):
         import numpy as np
 
         z = np.load(path, allow_pickle=False)
@@ -245,3 +258,12 @@ class CandidateBank:
         self.avoid = t("avoid") if "avoid" in z.files else None
         self.adv_id = [str(x) for x in z["adv_id"]]
         self.yaw_ov = subsampled_yaw(self.cand.double()).to(dtype)  # [S, K, S_sub], CAT's box yaw
+        self.sample_keep, self.avoid_valid = None, None
+        if valid_path is not None:
+            v = np.load(valid_path, allow_pickle=False)
+            rows = [self.index[str(st)] for st in v["stems"]]
+            if sorted(rows) != list(range(len(self.stems))):
+                raise ValueError(f"{valid_path} does not cover the bank's scenes")
+            order = torch.as_tensor(np.argsort(rows), device=device)
+            self.sample_keep = torch.as_tensor(v["sample_keep"], device=device)[order]
+            self.avoid_valid = torch.as_tensor(v["avoid_valid"], dtype=dtype, device=device)[order]

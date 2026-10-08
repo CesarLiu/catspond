@@ -94,11 +94,13 @@ class EnvSettings:
 
 class CatEnv:
     def __init__(self, settings: EnvSettings, scene_dir: str, static_path: str, bank_path: str,
-                 gpudrive_root: str = str(Path.home() / "gpudrive"), device: str = "cuda"):
+                 gpudrive_root: str = str(Path.home() / "gpudrive"), device: str = "cuda",
+                 valid_path: Optional[str] = None):
         self.s, self.device, self.W = settings, device, settings.worlds
         self.scene_dir = str(Path(scene_dir).resolve())
         self.static = StaticBank(str(Path(static_path).resolve()), device)
-        self.bank = ga.CandidateBank(str(Path(bank_path).resolve()), device)
+        self.bank = ga.CandidateBank(str(Path(bank_path).resolve()), device,
+                                     valid_path=None if valid_path is None else str(Path(valid_path).resolve()))
         root = str(Path(gpudrive_root).expanduser().resolve())
         sys.path.insert(0, root)
         os.environ.setdefault("MADRONA_MWGPU_KERNEL_CACHE", os.path.join(root, "gpudrive_cache"))
@@ -158,7 +160,9 @@ class CatEnv:
     def choose_plans(self, worlds: torch.Tensor, rule: str, tau: float = 2.0, rho: float = 0.1,
                      evaluation: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """CAT's (or the fair rule's) plan [n, 91, 5] for these worlds against
-        their scenes' stored ego trajectories, and the chosen candidates [n]."""
+        their scenes' stored ego trajectories, and the chosen candidates [n].
+        fair_valid is the fair rule on the valid alternatives only: beta over
+        the adversary's valid samples, avoidability over the ego's."""
         b, bank = self.brow[worlds], self.bank
         if evaluation:
             hist, hlen, hyaw = self.eval_hist[b], self.eval_len[b], self.eval_yaw[b]
@@ -169,9 +173,16 @@ class CatEnv:
                                   bank.av_size[b], yaw_ov=bank.yaw_ov[b], yaw_av=hyaw)
         if rule == "cat":
             chosen = ga.select("cat", score, md)
-        else:
+        elif rule == "fair":
             beta = ga.adversary_beta(bank.samples[b], bank.cand[b], hist, hlen, hprob)
             chosen = ga.select("fair", score, md, beta, bank.avoid[b], tau, rho)
+        elif rule == "fair_valid":
+            if bank.sample_keep is None:
+                raise ValueError("fair_valid needs the valid samples (CatEnv(valid_path=...))")
+            beta = ga.adversary_beta(bank.samples[b], bank.cand[b], hist, hlen, hprob, sample_mask=bank.sample_keep[b])
+            chosen = ga.select("fair", score, md, beta, bank.avoid_valid[b], tau, rho)
+        else:
+            raise ValueError(f"unknown rule {rule}")
         return ga.plan(bank.adv_past[b], bank.cand[b, chosen]), chosen
 
     def inject(self, worlds: torch.Tensor, plans: torch.Tensor) -> None:

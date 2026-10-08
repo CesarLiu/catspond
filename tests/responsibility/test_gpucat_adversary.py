@@ -69,3 +69,30 @@ def test_plan_matches_cat():
     ref = np.concatenate([pos, get_polyline_vel(pos), get_polyline_yaw(pos).reshape(-1, 1)], 1)
     mine = ga.plan(torch.as_tensor(past, dtype=f)[None], torch.as_tensor(future, dtype=f)[None])[0].numpy()
     assert np.allclose(mine, ref, atol=1e-12)
+
+
+def test_beta_on_valid_samples_matches_numpy_on_the_subset():
+    from responsibility.adversarial import adversary_responsibility
+    from responsibility.metrics import ResponsibilityConfig
+
+    rng = np.random.default_rng(3)
+    cfg = ResponsibilityConfig(n_safety_samples=40)
+    for _ in range(5):
+        samples, cand = paths(rng, 40, 80), paths(rng, 6, 80)
+        egos = [paths(rng, 1, 80)[0][:n] for n in (80, 35)]
+        keep = rng.random(40) < 0.6
+        keep[0] = True
+        want = adversary_responsibility(samples[keep], cand, egos, [0.7, 0.3], cfg, 80)
+        pad = np.zeros((2, 80, 2))
+        for i, e in enumerate(egos):
+            pad[i, :len(e)] = e
+        f = torch.float64
+        got = ga.adversary_beta(torch.as_tensor(samples, dtype=f)[None], torch.as_tensor(cand, dtype=f)[None],
+                                torch.as_tensor(pad, dtype=f)[None], torch.tensor([[80, 35]]),
+                                torch.tensor([[0.7, 0.3]], dtype=f), sample_mask=torch.as_tensor(keep)[None])
+        np.testing.assert_allclose(got[0].numpy(), want, atol=1e-5)  # the numpy side runs in float32
+        full = ga.adversary_beta(torch.as_tensor(samples, dtype=f)[None], torch.as_tensor(cand, dtype=f)[None],
+                                 torch.as_tensor(pad, dtype=f)[None], torch.tensor([[80, 35]]),
+                                 torch.tensor([[0.7, 0.3]], dtype=f))
+        np.testing.assert_allclose(full[0].numpy(), adversary_responsibility(samples, cand, egos, [0.7, 0.3], cfg, 80),
+                                   atol=1e-5)
