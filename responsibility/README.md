@@ -553,18 +553,18 @@ measured against what the others actually do. Policies must therefore be
 compared under the same test adversary, which is what `comparison_seeds.md`'s
 matrices do.
 
-#### Trained policies (preliminary, 2026-10-07: 16 of 17 models)
+#### Trained policies (all 17 models, 2026-10-08)
 
 These are the results of `run_eval.sh` with `MODELS=models_eval`, on the 100
 test scenes with every model under four test adversaries
 (`logs/responsibility/eval/compare`). Each value is a mean ± std over seeds:
-three seeds each, except two for `cat_share` and one for the ablations.
+three seeds each, except one for the two ablations.
 
 | training | crash, CAT adversary | of which ego / other fault | route completion, no adversary | route completion, CAT adversary | arrival, no adversary |
 |---|---|---|---|---|---|
 | TD3 replay | 42.0 ± 7.5% | 17.3 / 19.0% | 70.3 ± 4.7% | 63.5 ± 7.6% | 48.0% |
 | cat | 42.3 ± 5.0% | 15.0 / 22.0% | 66.5 ± 1.6% | 57.2 ± 3.3% | 46.3% |
-| cat_share (2 seeds) | 40.0 ± 1.4% | 19.5 / 15.5% | 69.7 ± 7.6% | 61.3 ± 4.1% | 49.0% |
+| cat_share | 39.3 ± 1.5% | 19.7 / 13.7% | 72.3 ± 7.0% | 64.7 ± 6.6% | 50.3% |
 | cat_rss | 35.7 ± 2.5% | 13.3 / 21.0% | 68.2 ± 3.5% | 61.6 ± 4.8% | 48.3% |
 | cat_fair2_0.1 | 34.0 ± 4.4% | 16.8 / 12.8% | **76.5 ± 1.6%** | **71.9 ± 1.4%** | **56.3%** |
 | cat_fairinf_0.5 (1 seed) | 35.0% | 15.0 / 16.0% | 77.2% | 69.6% | 55.0% |
@@ -583,8 +583,9 @@ verdict; shared verdicts make up the rest.
   the crash rates are 42.3 vs 42.0% (p = 0.95), and route completion is
   lower (57.2 vs 63.5%).
 - **The weighted collision penalties show no significant effect.**
-  `cat_share` is −2.3 pp on crashes (p = 0.51) and `cat_rss` −6.7 pp
-  (p = 0.13). The collision penalty they weight is small: −1 a step, about 4
+  Against `cat`, `cat_share` is −3.0 pp on crashes (p = 0.41) and +7.5 pp
+  on route completion against CAT's adversary (p = 0.18), and `cat_rss` is
+  −6.7 pp on crashes (p = 0.13). The collision penalty they weight is small: −1 a step, about 4
   for a collision, against −10 and the end of the episode for leaving the
   road.
 - **Behaviour profiles do not tell the settings apart.** Every TD3 policy has
