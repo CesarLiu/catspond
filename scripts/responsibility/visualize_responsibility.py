@@ -50,6 +50,7 @@ from matplotlib.patches import Patch, Polygon  # noqa: E402
 
 from responsibility.interaction import InteractionConfig  # noqa: E402
 from responsibility.metrics import MOTION_SETS, ResponsibilityConfig  # noqa: E402
+from responsibility.motion_filter import MotionFilterConfig  # noqa: E402
 from responsibility.records import load_record, save_record, scene_of  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
@@ -105,6 +106,8 @@ def config_from(args) -> ResponsibilityConfig:
                                     window_stride=args.stride, seed=args.seed, motion_set=args.motion_set)
     saved = json.loads((Path(args.run) / "config.json").read_text())["responsibility"]
     saved["interaction"] = InteractionConfig(**saved["interaction"])
+    if "filter" in saved:
+        saved["filter"] = MotionFilterConfig(**saved["filter"])
     return ResponsibilityConfig(**saved)
 
 

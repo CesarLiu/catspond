@@ -69,6 +69,7 @@ The pipeline is: scene → motion model → metrics → per-run outputs → summ
   - Runs are resumable, and `config.json` pins their settings.
   - With `--num-shards/--shard-index`, a run writes `windows.shard-<i>-of-<n>.csv` instead, and every reader accepts both forms.
   - Records hold everything needed to visualise a run offline, without the model or the scene files.
+- **Valid counterfactuals** (`motion_filter.py`) filter the motion set before β_s. Same intent is judged by HD lane topology (`--lane-route`, `lanes.py`) or, for maps built by perception that have no topology, from the trajectories' heading and lateral offset, optionally plus road edges (`--intent`, `intent.py`).
 - **Collision attribution**: `blame.py` is the counterfactual verdict. It has two baselines: the rear-end rule (in `blame.py`) and RSS (`rss.py`, geometry only, same-direction collisions). All three verdicts go into `crashes.csv` and the training logs.
 - **Policies**: `recording.py` turns a MetaDrive episode into a rollout. It touches the env only through the attributes it reads, so the tests use stand-ins. `rollouts.scene_from_rollout` rebuilds the scene from it. `compute_responsibility --rollouts` measures the ego in that scene and attributes its crashes (`blame.py` → `crashes.csv`). Compare policies against `--policy replay` rollouts, not the plain logged run, because MetaDrive drops static vehicles.
 - **Hooks into CAT**:

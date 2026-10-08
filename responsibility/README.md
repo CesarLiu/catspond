@@ -806,6 +806,51 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   - **A path-based alternative to the lane route.** `--route-tolerance` keeps
     the trajectories that stay within that many metres of the logged path,
     which is extended 100 m along the last heading.
+  - **Same intent without lane topology (`--intent`, `responsibility/intent.py`).**
+    A map built by perception has lane lines and road edges but almost no
+    topology in intersections, so the lane route has nothing to work with
+    there. `--intent` judges the manoeuvre from the trajectories:
+    1. *Heading:* at the last logged step T* (at most 8 s ahead), the
+       alternative heads within 45° (`--intent-heading`) of the logged path's
+       direction **where the alternative is**, not of the log at the same
+       time. A braking alternative still in the middle of the logged turn
+       is kept; with the same-time comparison it was not. At 45° the
+       same-time comparison drops 4.7% of the mass that ends on a route
+       lane, and this comparison drops 2.6%. An agent whose logged path is shorter
+       than 5 m shows no intent and is not restricted.
+    2. *Lateral:* it stays within 8 m (`--intent-lateral`) of the logged path.
+       This drops a turn that has only begun by T*, which still heads within
+       45° of the path.
+    3. *Road edges (`--intent-edges`, off by default):* every second, the
+       segment from the alternative to the nearest point of the logged path
+       crosses no `ROAD_EDGE_BOUNDARY` or `ROAD_EDGE_MEDIAN`. A missing edge
+       removes nothing, so an incomplete map only loosens the test.
+
+    **Calibration against the lane route on the first 30 scenes.** The
+    reference is β_s over the weighted motion sets of
+    `logs/filter_trial/weighted_filtered`, restricted by the HD lane route
+    (end points within 2 m of a route lane), on 930 SDC–neighbour pairs. The
+    sets are taken offline from the records, with no other filter.
+
+    | restriction | MAE β_s | MAE on the 105 pairs > 0.05 m | largest error |
+    |---|---|---|---|
+    | none | 0.0041 m | 0.0094 m | 0.62 m |
+    | heading 45° | 0.0026 m | 0.0102 m | 0.30 m |
+    | heading 45° + lateral 8 m (default) | 0.0027 m | 0.0126 m | 0.26 m |
+    | + road edges (HD) | 0.0030 m | 0.0158 m | 0.26 m |
+    | + road edges, 30% dropped, 0.3 m noise | 0.0030 m | 0.0154 m | 0.26 m |
+    | + road edges, 60% dropped, 0.5 m noise | 0.0028 m | 0.0137 m | 0.26 m |
+
+    The heading test drops all the mass that ends on a non-route lane more
+    than 15 m from the logged path. What it keeps of the non-route mass lies
+    within 15 m and heads the same way: two lanes over, beyond the lane
+    route's one-hop neighbours, or a turn that has only begun (scene 15,
+    steps 20–35, which the lateral test drops). Road edges move β_s
+    **away** from the lane route, and degrading them moves it back, because
+    edges at intersection corners and islands cut off alternatives the lane
+    route keeps. That is why they are off by default. At a 2 s horizon the
+    choice matters little in any case: even no restriction is within 0.01 m
+    of the lane route on the pairs that matter.
 
   `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
   probability-weighted, instead of 40 samples. That set holds a median of 944

@@ -40,7 +40,9 @@ and every branch after the log included), on the road, kinematically
 feasible, through no third agent (responsibility/motion_filter.py,
 responsibility/lanes.py); the per-neighbour observations then also record
 how much of the set was kept. It also takes beta_c over the neighbour's
-reachable goals only (--courtesy-valid-goals). With DenseTNT, --motion-set weighted uses its whole goal
+reachable goals only (--courtesy-valid-goals). On a map without lane topology
+(perception), --intent tells the same intent from the trajectories instead
+(responsibility/intent.py). With DenseTNT, --motion-set weighted uses its whole goal
 grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
 goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
 goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
@@ -138,6 +140,13 @@ def parse_args():
                         "their side neighbours and what follows the log.")
     g.add_argument("--courtesy-valid-goals", action="store_true",
                    help="beta_c over the neighbour's goals on lanes it can reach only.")
+    g.add_argument("--intent", action="store_true",
+                   help="Same intent without lane topology (responsibility/intent.py), for perceived maps: "
+                        "heading within --intent-heading of the logged path where the alternative is, "
+                        "within --intent-lateral of that path, and with --intent-edges across no road edge.")
+    g.add_argument("--intent-heading", type=float, default=f.intent_heading, help="deg.")
+    g.add_argument("--intent-lateral", type=float, default=f.intent_lateral, help="m; <= 0 disables.")
+    g.add_argument("--intent-edges", action="store_true", help="--intent also uses the map's road edges.")
     g.add_argument("--route-tolerance", type=float, default=f.route_tolerance,
                    help="m: keep only alternatives within this of the agent's logged route (same intent).")
     g.add_argument("--drivable-half-width", type=float, default=f.drivable_half_width,
@@ -179,6 +188,8 @@ def same_settings(stored, settings) -> bool:
     for key, value in LATER_SETTINGS.items():
         stored.setdefault(key, value)
     stored["responsibility"] = {**LATER_RESPONSIBILITY, **stored.get("responsibility", {})}
+    # filters added later were off in the runs that predate them
+    stored["responsibility"]["filter"] = {**LATER_RESPONSIBILITY["filter"], **stored["responsibility"]["filter"]}
     return stored == json.loads(json.dumps(settings))
 
 
@@ -198,6 +209,8 @@ def main():
     valid = args.valid_counterfactuals
     motion_filter = MotionFilterConfig(
         lane_route=args.lane_route or valid, route_tolerance=args.route_tolerance,
+        intent=args.intent, intent_heading=args.intent_heading,
+        intent_lateral=args.intent_lateral if args.intent_lateral > 0 else None, intent_edges=args.intent_edges,
         drivable_half_width=(args.drivable_half_width if args.drivable_half_width is not None
                              else (3.0 if valid else None)),
         kinematics=args.kinematics or valid, collision=args.collision_filter or valid)
