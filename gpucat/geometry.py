@@ -30,6 +30,46 @@ def route_coords(p: torch.Tensor, route: torch.Tensor, route_n: torch.Tensor):
     return lateral, s
 
 
+def points_along(route: torch.Tensor, route_n: torch.Tensor, s: torch.Tensor, ahead: torch.Tensor) -> torch.Tensor:
+    """[W, K, 2]: the points of the route polylines route [W, R, 2] (route_n
+    [W] valid points) at arc lengths s [W] + ahead [K] (m), clamped to the
+    route's ends -- the navigation checkpoints the SDC is told about."""
+    seg = route[:, 1:] - route[:, :-1]
+    valid = torch.arange(seg.shape[1], device=route.device)[None] < (route_n[:, None] - 1)
+    seg_len = seg.norm(dim=-1) * valid
+    cum = torch.cat([torch.zeros_like(seg_len[:, :1]), torch.cumsum(seg_len, -1)], -1)  # [W, R], flat past the end
+    total = cum[:, -1:]
+    q = torch.minimum((s[:, None] + ahead[None]).clamp(min=0.0), total)
+    k = torch.searchsorted(cum[:, 1:].contiguous(), q.contiguous())
+    k = torch.minimum(k, (route_n[:, None] - 2).clamp(min=0))
+    k = k.clamp(max=seg.shape[1] - 1)
+    a = route.gather(1, k[..., None].expand(-1, -1, 2))
+    d = seg.gather(1, k[..., None].expand(-1, -1, 2))
+    u = (q - cum.gather(1, k)) / seg_len.gather(1, k).clamp(min=1e-9)
+    return a + u.clamp(0.0, 1.0)[..., None] * d
+
+
+def ray_distances(p: torch.Tensor, yaw: torch.Tensor, segs: torch.Tensor, n: torch.Tensor,
+                  angles: torch.Tensor, max_range: float) -> torch.Tensor:
+    """[W, R]: the distance (m) from p [W, 2] along each ray yaw [W] +
+    angles [R] to the nearest of the segments segs [W, N, 4] (the first n [W]
+    valid), max_range when none is closer -- MetaDrive's side detector, on
+    the lines that end an episode."""
+    th = yaw[:, None] + angles[None]
+    dx, dy = torch.cos(th)[..., None], torch.sin(th)[..., None]  # [W, R, 1]
+    ax, ay = (segs[..., 0] - p[:, None, 0])[:, None], (segs[..., 1] - p[:, None, 1])[:, None]  # [W, 1, N]
+    ex, ey = (segs[..., 2] - segs[..., 0])[:, None], (segs[..., 3] - segs[..., 1])[:, None]
+    denom = dx * ey - dy * ex  # d x e
+    ok = denom.abs() > 1e-9
+    denom = torch.where(ok, denom, torch.ones_like(denom))
+    r = (ax * ey - ay * ex) / denom  # (a x e) / (d x e): distance along the ray
+    u = (ax * dy - ay * dx) / denom  # (a x d) / (d x e): position on the segment
+    valid = (torch.arange(segs.shape[1], device=p.device)[None] < n[:, None])[:, None]
+    hit = ok & valid & (r >= 0.0) & (u >= 0.0) & (u <= 1.0)
+    r = torch.where(hit, r, torch.full_like(r, float("inf")))
+    return r.min(-1).values.clamp(max=max_range)
+
+
 def box_corners(c: torch.Tensor, yaw: torch.Tensor, length: torch.Tensor, width: torch.Tensor) -> torch.Tensor:
     """[..., 4, 2] corners (counter-clockwise) of boxes centred at c [..., 2]."""
     d = torch.stack([torch.cos(yaw), torch.sin(yaw)], -1) * (0.5 * length)[..., None]

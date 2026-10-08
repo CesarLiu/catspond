@@ -27,6 +27,17 @@ full-size boxes (GPUDrive's own collision boxes are 0.7 of the size):
   dynamics    GPUDrive's invertible bicycle: acceleration in accel_range
               (m/s^2) and curvature within +-curvature (1/m) from the two
               policy outputs in [-1, 1]
+  observation GPUDrive's (ego state, 63 partners, 200 road points) and, with
+              ``navigation``, what MetaDrive tells CAT's policy and GPUDrive's
+              does not: the route ahead (points 5-50 m along it, in the SDC's
+              frame, /50 m), the distance from the route (/10 m), the route
+              completion, and the distances along 24 rays (every 15 degrees,
+              /50 m) to the road edges and, separately, to the solid yellow
+              lines. GPUDrive's road points type every line as a RoadLine, so
+              without them the policy cannot tell the yellow lines that end
+              an episode from the lane lines it may cross, and only knows the
+              route's end point (replay_s0, 4.5M steps without them: 21%
+              arrival, 51% out of road on the test scenes)
 
 CAT's adversary bookkeeping: per scene, the SDC's last ``history``
 trajectories (steps 11 on, as AdvGenerator.after_episode stores them;
@@ -45,7 +56,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import torch
 
 from gpucat import adversary as ga
-from gpucat.geometry import boxes_overlap, route_coords, segments_touch_box
+from gpucat.geometry import boxes_overlap, points_along, ray_distances, route_coords, segments_touch_box
 from gpucat.static import StaticBank
 
 TRAJ_LEN = 91
@@ -56,6 +67,11 @@ POS, VEL, YAW, VALID = slice(0, 182), slice(182, 364), slice(364, 455), slice(45
 
 # outcome codes per episode
 RUNNING, ARRIVED, OUT_OF_ROAD, CRASHED, TIMEOUT = 0, 1, 2, 3, 4
+
+# navigation observations
+ROUTE_AHEAD = (5.0, 10.0, 20.0, 30.0, 50.0)  # m along the route
+RAYS = 24
+RAY_RANGE = 50.0  # m
 
 
 @dataclass
@@ -73,6 +89,7 @@ class EnvSettings:
     arrive_completion: float = 0.95
     history: int = 5  # CAT's AV_traj_num
     collision_radius: float = 30.0  # m: vehicles farther from the SDC are not checked
+    navigation: bool = True  # add the route and the rays to the observations
 
 
 class CatEnv:
@@ -228,7 +245,24 @@ class CatEnv:
         """The SDC's observations [W, D]. Asked for with the controlled-agent
         mask: a view into get_obs()'s [W, 64, D] would keep all of it alive
         in every stored step (6 GB over a 64-step rollout of 128 worlds)."""
-        return self.env.get_obs(self.env.cont_agent_mask)
+        obs = self.env.get_obs(self.env.cont_agent_mask)
+        if not self.s.navigation:
+            return obs
+        return torch.cat([obs, self.navigation_obs()], -1)
+
+    def navigation_obs(self) -> torch.Tensor:
+        """[W, 2 len(ROUTE_AHEAD) + 2 + 2 RAYS] (module docstring)."""
+        p, h = self._ego()
+        lateral, s = route_coords(p, self.route, self.route_n)
+        ahead = points_along(self.route, self.route_n, s, torch.tensor(ROUTE_AHEAD, device=self.device)) - p[:, None]
+        cos, sin = torch.cos(h)[:, None], torch.sin(h)[:, None]
+        local = torch.stack([ahead[..., 0] * cos + ahead[..., 1] * sin, -ahead[..., 0] * sin + ahead[..., 1] * cos], -1)
+        angles = torch.arange(RAYS, device=self.device) * (2.0 * torch.pi / RAYS)
+        edge = ray_distances(p, h, self.edges, self.edges_n, angles, RAY_RANGE)
+        yellow = ray_distances(p, h, self.yellow, self.yellow_n, angles, RAY_RANGE)
+        completion = (s / self.route_len.clamp(min=1.0)).clamp(0.0, 1.0)
+        return torch.cat([local.flatten(1) / RAY_RANGE, (lateral / self.s.out_of_route)[:, None], completion[:, None],
+                          edge / RAY_RANGE, yellow / RAY_RANGE], -1).to(torch.float32)
 
     def _ego(self):
         g = self.sim.absolute_self_observation_tensor().to_torch()
