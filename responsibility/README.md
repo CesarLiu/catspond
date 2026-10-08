@@ -50,6 +50,91 @@ distribution more than a far one, that DenseTNT's partner slot is
 immaterial (~1e-7 nats), and that a replayed rollout (below) gives the logged
 values once the objects MetaDrive does not spawn are left out.
 
+## Command reference
+
+Run from the repository root with the environment active. The sections below
+explain each step; this is the whole pipeline in one place, for the
+simplified evaluation of one pair per scene (`--use-ooi`: the self-driving
+car and CAT's adversary) with the NMS motion set, the most accurate 40-trajectory set
+measured (see "Valid counterfactuals" under Design decisions).
+
+**Compute.** `run_h200.sh` runs every agent in shards, then the summaries and
+the levels, into `OUT/<agent>/`:
+
+```bash
+OUT=logs/responsibility/ooi_nms AGENTS="sdc adv" SHARDS=8 RECORDS=1 \
+EXTRA="--use-ooi --motion-set nms --valid-counterfactuals" \
+bash scripts/responsibility/run_h200.sh
+```
+
+The same for one agent by hand (`--agent adv` swaps the roles of the pair):
+
+```bash
+python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \
+    --out-dir logs/responsibility/ooi_nms/sdc --agent sdc \
+    --use-ooi --motion-set nms --valid-counterfactuals --save-records --device cuda
+```
+
+- Shards: `--num-shards N --shard-index i` for i = 0 … N−1, all into the
+  same `--out-dir`. Each shard writes `windows.shard-<i>-of-<N>.csv`, and
+  every reader takes both forms.
+- A subset: `--n 30 --first 0`. Leaving out β_c is 3–10× faster:
+  `--no-courtesy`.
+- `--valid-counterfactuals` is `--lane-route`, `--drivable-half-width 3`,
+  `--kinematics`, `--collision-filter` and `--courtesy-valid-goals`.
+- On a map built by perception (no lane topology), use
+  `--intent --drivable-edges --kinematics --collision-filter` instead.
+- Motion sets: `sampled` (default), `weighted` (the reference; a median of
+  944 trajectories per window), `topk`, `nms`.
+- MTR instead of DenseTNT: `--model mtr --checkpoint <ckpt>`.
+- A driving policy instead of the log:
+  `--rollouts rollouts/<policy>/<adversary>`.
+- An output directory resumes. Its `config.json` pins the settings, and a
+  run with other settings is refused.
+
+**Summarise and fit levels** (`run_h200.sh` does both):
+
+```bash
+python -m scripts.responsibility.summarize_responsibility --run logs/responsibility/ooi_nms/sdc
+python -m scripts.responsibility.fit_levels \
+    --runs logs/responsibility/ooi_nms/sdc logs/responsibility/ooi_nms/adv \
+    --out-dir logs/responsibility/ooi_nms/levels
+```
+
+**Visualise.**
+
+- Offline, from records, with no model needed:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility \
+      --record logs/responsibility/ooi_nms/sdc/records/{17,23,42}.pkl \
+      --levels logs/responsibility/ooi_nms/levels/levels.csv \
+      --out-dir logs/responsibility/ooi_nms/videos_sdc
+  ```
+
+- Live, with the model loaded once for every scene and both roles:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility --scene 17 23 42 \
+      --agent sdc adv --use-ooi --motion-set nms --device cuda \
+      --out-dir logs/responsibility/videos_ooi
+  ```
+
+- Live, with a run's settings, so the values equal its `windows.csv`:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility --scene 17 23 \
+      --run logs/responsibility/ooi_nms/sdc --agent sdc --use-ooi \
+      --levels logs/responsibility/ooi_nms/levels/levels.csv \
+      --out-dir logs/responsibility/video_17_23
+  ```
+
+One video goes to `--out-dir`. Several go to `--out-dir/<scene>`, or to
+`--out-dir/<scene>_<agent>` with several agents. With `--run`, the motion
+set, the filters and `use_ooi` come from the run's `config.json`, and
+`--use-ooi` is refused for a run made without it. A DenseTNT process takes a
+few hundred MB of GPU memory.
+
 ## Is the ego aggressive?
 
 ```bash
@@ -92,7 +177,9 @@ python -m scripts.responsibility.visualize_responsibility --scene 17 \
     --out-dir logs/responsibility/video_17
 ```
 
-One frame per context step t_k (`frames/t_XXX.png`), stitched into
+`--scene` and `--record` take several values (the model is loaded once),
+and `--agent sdc adv` renders each scene for both objects of interest; see
+the command reference above. One frame per context step t_k (`frames/t_XXX.png`), stitched into
 `responsibility.gif` and `responsibility.mp4` (the MP4 needs OpenCV,
 `opencv-python-headless`, which `setup_env.sh` installs). Each frame shows:
 
