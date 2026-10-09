@@ -858,6 +858,51 @@ verdict; shared verdicts make up the rest.
   which suggests avoidability matters more than β. `cat_fair2_0.1_share`
   looks like an outlier (59% crashes). Both need more seeds.
 
+#### Reproducing CAT's Table 2 (2026-10-09)
+
+CAT (Sec. 4.3) trains TD3 on the same split as here: scenes 0-399 of these
+500 WOMD scenes for training, 400-499 for testing. Training runs for about
+1M steps: Fig. 5 ends near 9 x 10^5 interactions and the code defaults to
+`max_timesteps=1e6`; Table 3's "10E6" looks like a typo. The table below
+uses CAT's own `eval_policy`, which `cat_RLtrain.py` logs every 25k steps
+(`logs/<run>_MDWaymo-seed<s>-0/logger.csv`). Each value is the final
+evaluation, averaged over 3 seeds:
+
+| | crash, log replay | crash, CAT adversary | route completion, CAT adversary |
+|---|---|---|---|
+| paper: replay | 19.9% | 43.3% | 63.5% |
+| here: replay | 21.3% | 41.7% | 63.2% |
+| paper: CAT | 13.4% | **28.2%** | 67.6% |
+| here: cat | 15.7% | **39.7%** | 56.8% |
+
+- **The replay baseline and the log-replay drop reproduce.** The replay
+  numbers match the paper within 3 pp, and CAT training lowers the
+  log-replay crash rate by 5.6 pp (paper: 6.5 pp).
+- **The gain against CAT's adversary does not.** The paper's crash rate
+  falls by 15 pp; here it falls by 2 pp. The cat runs' curves stay near
+  0.40 for the whole run, and their best checkpoints reach 0.32-0.36.
+
+The training path is CAT's code, apart from two changes:
+
+- **What is identical:** `--adv_selection cat` returns CAT's own
+  `AdvGenerator`. The hyperparameters are CAT's defaults (M = 32,
+  N = 5, alpha = 0.99, min_prob 0.1), and so are the training loop and
+  `eval_policy`.
+- **What changed:**
+  - `StepAlignedPlan`. It only matters for adversaries that appear after
+    the first step: 16 of the 400 training scenes and 8 of the 100 test
+    scenes, 1-10 steps late.
+  - Clearing a leftover adversary plan when an episode starts.
+  - `--no_store_map`, which affects memory only.
+- **The environment:** MetaDrive is CAT's package, unmodified. The
+  dependency versions differ (torch 2.4.1 instead of 1.12), and DenseTNT's
+  candidates match CAT's to 3.6e-12 m.
+
+The adversary does act in training. In the second half, adversarial
+episodes end in a crash or off the road in 0.68 of cases, normal ones in
+0.50. A pristine checkout of CAT (commit 9de53da, seed 0) is being trained
+in `/home/Cesar/catspond-upstream`, to rule out the two changes.
+
 ### Training with a responsibility-weighted collision penalty
 
 In CAT's training environment a collision does not end the episode: at every
