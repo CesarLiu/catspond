@@ -1,6 +1,6 @@
 """Checks the right-of-way rules (responsibility/right_of_way.py) on logged
-driving, at scale: WOMD's validation_interactive split converted with
-ScenarioNet, or any folder of scene files.
+driving, at scale: WOMD's validation_interactive split converted by
+convert_womd_split.py (or with ScenarioNet), or any folder of scene files.
 
 Logged drivers mostly keep the right of way, so the holder the rules name
 should usually pass the conflict point P* first. For every scene the pair
@@ -30,7 +30,7 @@ interval). Scene files are found recursively, ScenarioNet's dataset_*.pkl
 index files skipped.
 
 Example (the server, 32 processes):
-    python -m scripts.responsibility.validate_right_of_way --scenes /data/womd_sn/validation_interactive \\
+    python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/cat_format/validation_interactive/scenes \\
         --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 \\
         --out-dir logs/responsibility/right_of_way/validation_interactive
 """

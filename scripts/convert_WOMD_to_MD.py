@@ -128,6 +128,85 @@ def _get_number_summary(scenario):
     return number_summary_dict
 
 
+def convert_scenario(scenario, file):
+    """One WOMD Scenario proto as a MetaDrive scenario description: (export file name, description dict)."""
+    md_scenario = SD()
+
+    md_scenario[SD.ID] = scenario.scenario_id
+
+    md_scenario[SD.VERSION] = DATA_VERSION
+
+    # Please note that SDC track index is not identical to sdc_id.
+    # sdc_id is a unique indicator to a track, while sdc_track_index is only the index of the sdc track
+    # in the tracks datastructure.
+
+    track_length = len(list(scenario.timestamps_seconds))
+
+    tracks, sdc_id = extract_tracks(scenario.tracks, scenario.sdc_track_index, track_length)
+
+    md_scenario[SD.LENGTH] = track_length
+
+    md_scenario[SD.TRACKS] = tracks
+
+    dynamic_states = extract_dynamic_map_states(scenario.dynamic_map_states, track_length)
+
+    md_scenario[SD.DYNAMIC_MAP_STATES] = dynamic_states
+
+    map_features = extract_map_features(scenario.map_features)
+    md_scenario[SD.MAP_FEATURES] = map_features
+
+    compute_width(md_scenario[SD.MAP_FEATURES])
+
+    md_scenario[SD.METADATA] = {}
+    md_scenario[SD.METADATA][SD.COORDINATE] = MetaDriveType.COORDINATE_WAYMO
+    md_scenario[SD.METADATA][SD.TIMESTEP] = np.asarray(list(scenario.timestamps_seconds), dtype=np.float32)
+    md_scenario[SD.METADATA][SD.METADRIVE_PROCESSED] = False
+    md_scenario[SD.METADATA][SD.SDC_ID] = str(sdc_id)
+    md_scenario[SD.METADATA]["dataset"] = "waymo"
+    md_scenario[SD.METADATA]["scenario_id"] = scenario.scenario_id
+    md_scenario[SD.METADATA]["source_file"] = str(file)
+    md_scenario[SD.METADATA]["track_length"] = track_length
+
+    # === Waymo specific data. Storing them here ===
+    md_scenario[SD.METADATA]["current_time_index"] = scenario.current_time_index
+    md_scenario[SD.METADATA]["sdc_track_index"] = scenario.sdc_track_index
+
+    # obj id
+    md_scenario[SD.METADATA]["objects_of_interest"] = [str(obj) for obj in scenario.objects_of_interest]
+
+    track_index = [obj.track_index for obj in scenario.tracks_to_predict]
+    track_id = [str(scenario.tracks[ind].id) for ind in track_index]
+    track_difficulty = [obj.difficulty for obj in scenario.tracks_to_predict]
+    track_obj_type = [tracks[id]["type"] for id in track_id]
+    md_scenario[SD.METADATA]["tracks_to_predict"] = {
+        id: {
+            "track_index": track_index[count],
+            "track_id": id,
+            "difficulty": track_difficulty[count],
+            "object_type": track_obj_type[count]
+        }
+        for count, id in enumerate(track_id)
+    }
+
+    export_file_name = SD.get_export_file_name("waymo", "v1.2" + file, scenario.scenario_id)
+
+    summary_dict = {}
+    summary_dict["sdc"] = _get_agent_summary(
+        state_dict=md_scenario.get_sdc_track()["state"], id=sdc_id, type=md_scenario.get_sdc_track()["type"]
+    )
+    for track_id, track in md_scenario[SD.TRACKS].items():
+        summary_dict[track_id] = _get_agent_summary(state_dict=track["state"], id=track_id, type=track["type"])
+    md_scenario[SD.METADATA]["object_summary"] = summary_dict
+
+    # Count some objects occurrence
+    md_scenario[SD.METADATA]["number_summary"] = _get_number_summary(md_scenario)
+
+    md_scenario = md_scenario.to_dict()
+
+    SD.sanity_check(md_scenario, check_self_type=True)
+    return export_file_name, md_scenario
+
+
 def parse_data(file_list, input_path, output_path, worker_index=None):
     scenario = scenario_pb2.Scenario()
 
@@ -152,82 +231,8 @@ def parse_data(file_list, input_path, output_path, worker_index=None):
         for j, data in enumerate(dataset.as_numpy_iterator()):
             scenario.ParseFromString(data)
 
-            md_scenario = SD()
-
-            md_scenario[SD.ID] = scenario.scenario_id
-
-            md_scenario[SD.VERSION] = DATA_VERSION
-
-            # Please note that SDC track index is not identical to sdc_id.
-            # sdc_id is a unique indicator to a track, while sdc_track_index is only the index of the sdc track
-            # in the tracks datastructure.
-
-            track_length = len(list(scenario.timestamps_seconds))
-
-            tracks, sdc_id = extract_tracks(scenario.tracks, scenario.sdc_track_index, track_length)
-
-            md_scenario[SD.LENGTH] = track_length
-
-            md_scenario[SD.TRACKS] = tracks
-
-            dynamic_states = extract_dynamic_map_states(scenario.dynamic_map_states, track_length)
-
-            md_scenario[SD.DYNAMIC_MAP_STATES] = dynamic_states
-
-            map_features = extract_map_features(scenario.map_features)
-            md_scenario[SD.MAP_FEATURES] = map_features
-
-            compute_width(md_scenario[SD.MAP_FEATURES])
-
-            md_scenario[SD.METADATA] = {}
-            md_scenario[SD.METADATA][SD.COORDINATE] = MetaDriveType.COORDINATE_WAYMO
-            md_scenario[SD.METADATA][SD.TIMESTEP] = np.asarray(list(scenario.timestamps_seconds), dtype=np.float32)
-            md_scenario[SD.METADATA][SD.METADRIVE_PROCESSED] = False
-            md_scenario[SD.METADATA][SD.SDC_ID] = str(sdc_id)
-            md_scenario[SD.METADATA]["dataset"] = "waymo"
-            md_scenario[SD.METADATA]["scenario_id"] = scenario.scenario_id
-            md_scenario[SD.METADATA]["source_file"] = str(file)
-            md_scenario[SD.METADATA]["track_length"] = track_length
-
-            # === Waymo specific data. Storing them here ===
-            md_scenario[SD.METADATA]["current_time_index"] = scenario.current_time_index
-            md_scenario[SD.METADATA]["sdc_track_index"] = scenario.sdc_track_index
-
-            # obj id
-            md_scenario[SD.METADATA]["objects_of_interest"] = [str(obj) for obj in scenario.objects_of_interest]
-
-            track_index = [obj.track_index for obj in scenario.tracks_to_predict]
-            track_id = [str(scenario.tracks[ind].id) for ind in track_index]
-            track_difficulty = [obj.difficulty for obj in scenario.tracks_to_predict]
-            track_obj_type = [tracks[id]["type"] for id in track_id]
-            md_scenario[SD.METADATA]["tracks_to_predict"] = {
-                id: {
-                    "track_index": track_index[count],
-                    "track_id": id,
-                    "difficulty": track_difficulty[count],
-                    "object_type": track_obj_type[count]
-                }
-                for count, id in enumerate(track_id)
-            }
-
-            export_file_name = SD.get_export_file_name("waymo", "v1.2" + file, scenario.scenario_id)
-
-            summary_dict = {}
-            summary_dict["sdc"] = _get_agent_summary(
-                state_dict=md_scenario.get_sdc_track()["state"], id=sdc_id, type=md_scenario.get_sdc_track()["type"]
-            )
-            for track_id, track in md_scenario[SD.TRACKS].items():
-                summary_dict[track_id] = _get_agent_summary(state_dict=track["state"], id=track_id, type=track["type"])
-            md_scenario[SD.METADATA]["object_summary"] = summary_dict
-
-            # Count some objects occurrence
-            md_scenario[SD.METADATA]["number_summary"] = _get_number_summary(md_scenario)
-
+            export_file_name, md_scenario = convert_scenario(scenario, file)
             metadata_recorder[export_file_name] = copy.deepcopy(md_scenario[SD.METADATA])
-
-            md_scenario = md_scenario.to_dict()
-
-            SD.sanity_check(md_scenario, check_self_type=True)
 
             p = os.path.join(output_path, export_file_name)
             with open(p, "wb") as f:

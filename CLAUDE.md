@@ -39,6 +39,7 @@ python -m scripts.responsibility.verify_densetnt --n 3 --device cuda      # need
 Several things are not in git and are usually **absent on a dev machine**:
 
 - downloaded separately (see `readme.md`): the modified `metadrive/` package, `raw_scenes_500/*.pkl` (the scenes) and `advgen/pretrained/densetnt.bin`;
+- more scenes: `scripts/responsibility/convert_womd_split.py` converts a whole WOMD split (the L4 server has v1.2.1 shards in `~/womd_v1_2_1/`) into CAT's scene format with CAT's own converter, plus an `index.csv` (`sdc_in_ooi`, `in_cat`). The open-loop tools read these scenes; the closed loop stays on CAT's 500;
 - produced on the server: `logs/` (gitignored) and `rollouts/` (not ignored, so don't commit it).
 
 Anything that needs MetaDrive (`cat_RLtrain.py`, `cat_advgen.py`, `collect_rollouts.py`; the plans mark these 🖥) can only run on the GPU server. Develop it against the stand-ins in the tests, and leave the server steps to the runbook.

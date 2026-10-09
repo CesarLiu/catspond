@@ -534,23 +534,27 @@ cat $P/compare/comparison.md
 tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts logs/blame
 ```
 
-## 10d. 路权规则的留出验证（不用 GPU，约 20 分钟）
+## 10d. 把 WOMD 分片转成 CAT 格式，并做路权规则的留出验证（不用 GPU）
 
 CAT 的 500 个场景是路权规则的开发集，规则是看着这些场景里的错误补出来的。留出验证用 WOMD `validation_interactive` 的其余场景，每个场景取它的两个 object of interest 作为一对。
 
 ```bash
-W=/data/womd_v1_2_0; S=/data/womd_sn      # 原始 tfrecord 和 ScenarioNet 输出的位置，按实际修改
-gsutil -m cp -r gs://waymo_open_dataset_motion_v_1_2_0/uncompressed/scenario/validation_interactive $W/
-python -m scenarionet.convert_waymo -d $S/validation_interactive --raw_data_path $W/validation_interactive --num_workers 32
-# 先试点 200 个场景：看 errors 是否为 0，signal-unknown 是否没有多到离谱（灯态格式不对时几乎全是 unknown）
-python -m scripts.responsibility.validate_right_of_way --scenes $S/validation_interactive --n 200 \
-  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 --out-dir logs/responsibility/right_of_way/pilot
+W=~/womd_v1_2_1/validation_interactive            # WOMD v1.2.1 的 tfrecord 分片（L4 服务器上现有 14 个，共 150 个）
+C=~/womd_v1_2_1/cat_format/validation_interactive # 转成 CAT 格式的场景
+# 转换：用 CAT 自己的转换函数，两个 OOI 都是车辆的场景全部保留，index.csv 标注 sdc_in_ooi 和 in_cat；可续跑
+~/venvs/cat39/bin/python -m scripts.responsibility.convert_womd_split --tfrecords $W --out-dir $C --workers 8
+# 先试点 200 个场景：看 errors 是否为 0
+python -m scripts.responsibility.validate_right_of_way --scenes $C/scenes --n 200 \
+  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 8 --out-dir logs/responsibility/right_of_way/pilot
 # 正式运行（可续跑）
-python -m scripts.responsibility.validate_right_of_way --scenes $S/validation_interactive \
-  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 \
+python -m scripts.responsibility.validate_right_of_way --scenes $C/scenes \
+  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 8 \
   --out-dir logs/responsibility/right_of_way/validation_interactive
 cat logs/responsibility/right_of_way/validation_interactive/summary.md
 ```
+
+- 转换速度：CAT 的 497 个场景单进程 54 s（约 0.1 s/场景）。其余 136 个分片要用在 Waymo 官网接受过许可的账号下载到 `$W`（本机的服务账号无权访问 Waymo 的存储桶，2026-10-09 试过，返回 403），然后再跑同一条命令，已转换的分片会跳过。
+- 转出的场景也能直接给开环的责任计算用（`compute_responsibility --scenes $C/scenes --use-ooi`）。
 
 - 速度：500 个场景、8 个进程用 48 s。
 - 要看的：每条规则"有路权者先通过"的比例和 95% 置信区间；`CVC: first-in` 和 `CVC: yield-right` 两行，用来检验"无管控路口默认关闭 CVC 规则"这个决定在留出集上是否仍然成立。

@@ -209,6 +209,10 @@ def _map_arrays(scene: Scene) -> Dict[str, np.ndarray]:
     }
     count = 0
     for key, feature in scene.map_features.items():
+        if feature["type"] not in MAP_TYPES:
+            # WOMD v1.2's DRIVEWAY (type 20) and MetaDrive's UNKNOWN lines and edges: DenseTNT was
+            # trained on v1.1 maps without them (and asserts types below 20), so it sees the same kinds
+            continue
         kind = MAP_TYPES[feature["type"]]
         if kind == 17:
             poly = feature["position"]

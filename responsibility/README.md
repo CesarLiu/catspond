@@ -50,6 +50,42 @@ distribution more than a far one, that DenseTNT's partner slot is
 immaterial (~1e-7 nats), and that a replayed rollout (below) gives the logged
 values once the objects MetaDrive does not spawn are left out.
 
+### More scenes: a whole WOMD split
+
+CAT's 500 scenes are a convenience sample. CAT converted 14 of the 150
+validation_interactive shards (`scripts/convert_WOMD_to_MD.py`) and kept
+the 91-step scenarios whose self-driving car is one of the two objects of
+interest (`scripts/select_cases.py`). There was no selection by
+interaction or criticality, and 3 scenes are duplicates (497 ids).
+
+`convert_womd_split` converts a whole split with CAT's own conversion
+(`convert_scenario`), so the scenes have the format of `raw_scenes_500`:
+
+- it keeps every scenario whose two objects of interest are vehicles;
+- `index.csv` beside the scene folder marks `sdc_in_ooi` (the scenes CAT's
+  closed loop can use) and `in_cat`;
+- one process per shard; the run resumes;
+- it runs in cat39, with the WOMD protos borrowed from the catk environment
+  (same protobuf version).
+
+```bash
+python -m scripts.responsibility.convert_womd_split --tfrecords ~/womd_v1_2_1/validation_interactive \
+    --out-dir ~/womd_v1_2_1/cat_format/validation_interactive --workers 8   # --shards 1 --limit 20: a test
+```
+
+Converting CAT's 497 scenarios from WOMD v1.2.1 this way (54 s, one
+process) gives the same tracks as CAT's v1.1 files: the same agents and
+ids, positions equal to the bit. The maps differ: v1.2.1 reprocessed them,
+the light count differs in 222 scenes, and driveways were added. The
+right-of-way check moves from 87.3% to 86.5% on them.
+
+v1.2 adds DRIVEWAY features, and MetaDrive writes UNKNOWN for unknown lines
+and edges. DenseTNT's input leaves both out, since it was trained on v1.1
+maps without them and asserts types below 20. CAT's 500 scenes contain
+neither, so their inputs are unchanged. The open-loop tools read the new
+scenes as they read CAT's. The closed loop does not: CAT's `advgen` maps
+types without that guard, and MetaDrive training uses CAT's 500.
+
 ## Command reference
 
 Run from the repository root with the environment active. The sections below
@@ -742,12 +778,12 @@ yielders, the duties' false-alarm rate on lawful driving.
 These 500 scenes were the development set: the driveway, through-road,
 oncoming and all-way-stop rules were added after looking at their
 disagreements. The held-out check runs over the rest of WOMD's
-validation_interactive split (converted with ScenarioNet), with the two
+validation_interactive split (converted by `convert_womd_split`, below), with the two
 objects of interest as the pair. It also evaluates the CVC's uncontrolled
 order on the pairs left "uncontrolled", in the same pass:
 
 ```bash
-python -m scripts.responsibility.validate_right_of_way --scenes /data/womd_sn/validation_interactive \
+python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/cat_format/validation_interactive/scenes \
     --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 \
     --out-dir logs/responsibility/right_of_way/validation_interactive
 ```
