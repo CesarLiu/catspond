@@ -20,6 +20,10 @@ Per run (policy x adversary mode):
                      (responsibility/rss.py; same-direction collisions):
                      agreement, coverage (of all collisions), and RSS's own
                      ego-fault share of the collisions it decides
+  right of way       likewise against the traffic-law verdict for
+                     conflicts between different paths (crossing, turning,
+                     merging; responsibility/right_of_way.py); baseline
+                     coverage: the share of collisions RSS or it decides
   stopped            share of windows slower than --min-speed (not judged)
   aggressive         share of judged windows with beta_s or beta_c above the
                      reference's thresholds (summarize_responsibility's
@@ -134,6 +138,7 @@ def run_row(label, windows, outcomes, crashes, t_s, t_c, t_t, min_speed, levels=
     attributed = [r for r in crashes if r["verdict"] in FAULT_VERDICTS]
     decided = [r for r in attributed if r["verdict"] in SIDES and r.get("rule") in SIDES]
     rss_decided = [r for r in attributed if r["verdict"] in SIDES and r.get("rss") in SIDES]
+    row_decided = [r for r in attributed if r["verdict"] in SIDES and r.get("right_of_way") in SIDES]
     row = {
         "run": label,
         "episodes": len(outcomes),
@@ -145,6 +150,12 @@ def run_row(label, windows, outcomes, crashes, t_s, t_c, t_t, min_speed, levels=
         "rss_agreement": _mean([r["verdict"] == r["rss"] for r in rss_decided]),
         "rss_coverage": _mean([r.get("rss") in RSS_VERDICTS for r in crashes]),
         "rss_ego_fault_share": _mean([r["rss"] == "ego" for r in crashes if r.get("rss") in RSS_VERDICTS]),
+        "right_of_way_agreement": _mean([r["verdict"] == r["right_of_way"] for r in row_decided]),
+        "right_of_way_coverage": _mean([r.get("right_of_way") in RSS_VERDICTS for r in crashes]),
+        "right_of_way_ego_fault_share": _mean([r["right_of_way"] == "ego" for r in crashes
+                                               if r.get("right_of_way") in RSS_VERDICTS]),
+        "baseline_coverage": _mean([r.get("rss") in RSS_VERDICTS or r.get("right_of_way") in RSS_VERDICTS
+                                    for r in crashes]),
         "route_completion": _mean([o["route_completion"] for o in outcomes]),
         "arrive_rate": _mean([o["arrive_dest"] for o in outcomes]),
         "out_of_road_rate": _mean([o["out_of_road"] for o in outcomes]),
@@ -179,12 +190,14 @@ def with_reference_ratios(rows, reference):
 
 
 PERCENT = ("crash_rate", "ego_fault_share", "other_fault_share", "rule_agreement", "rule_coverage",
-           "rss_agreement", "rss_coverage", "rss_ego_fault_share",
+           "rss_agreement", "rss_coverage", "rss_ego_fault_share", "right_of_way_agreement",
+           "right_of_way_coverage", "right_of_way_ego_fault_share", "baseline_coverage",
            "route_completion", "arrive_rate",
            "out_of_road_rate", "stopped", "aggressive", "aggressive_safety", "aggressive_courtesy", "timid",
            "aggressive_levels")
 COLUMNS = [("run", "run"), ("episodes", "episodes"), ("crash_rate", "crash"), ("ego_fault_share", "ego-fault"),
-           ("rule_agreement", "rule agree"), ("rss_agreement", "RSS agree"), ("route_completion", "route compl."),
+           ("rule_agreement", "rule agree"), ("rss_agreement", "RSS agree"),
+           ("right_of_way_agreement", "RoW agree"), ("route_completion", "route compl."),
            ("stopped", "stopped"), ("aggressive", "aggressive"),
            ("aggressive_x_ref", "x ref"), ("timid", "timid"), ("timid_x_ref", "x ref"),
            ("safety_median", "β_s median"), ("courtesy_p90", "β_c p90")]
@@ -218,6 +231,7 @@ def markdown(rows):
 SEED = re.compile(r"_s\d+$")
 MATRIX = [("crash_rate", "crash rate"), ("ego_fault_share", "ego-fault share of collisions"),
           ("rss_ego_fault_share", "RSS ego-fault share of the collisions RSS decides"),
+          ("right_of_way_ego_fault_share", "right-of-way ego-fault share of the collisions it decides"),
           ("route_completion", "route completion"), ("timid", "timid windows"),
           ("aggressive", "aggressive windows")]
 

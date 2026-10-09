@@ -33,8 +33,9 @@ the penalty:
 The baseline (mode "rss") weights by Responsibility-Sensitive Safety
 instead (responsibility/rss.py): w = 0 when RSS puts the collision on the
 other alone, w = 1 otherwise (the ego's fault, both's, or no verdict). It
-needs no motion model. Every event's RSS verdict is logged in both modes, so
-the two attributions can be compared on the same collisions.
+needs no motion model. Every event's RSS verdict and its right-of-way
+verdict (responsibility/right_of_way.py) are logged in both modes, so the
+attributions can be compared on the same collisions.
 
 An episode's transitions are held back and released by ``end`` with the
 weighted rewards, so the replay buffer never holds an unweighted collision.
@@ -54,6 +55,7 @@ from responsibility.blame import MARGIN, Blame, rollout_blame
 from responsibility.metrics import ResponsibilityConfig
 from responsibility.recording import Recorder, SceneIndex, current_scenario_id
 from responsibility.rollouts import scene_from_rollout
+from responsibility.right_of_way import RightOfWay, rollout_right_of_way
 from responsibility.rss import RssBlame, rollout_rss, rss_weight
 from responsibility.scene import Scene
 
@@ -61,7 +63,7 @@ SIDES = ("ego", "other")
 MODES = ("share", "rss")
 LOG_FIELDS = ["episode", "total_steps", "scene", "scenario_index", "adversary", "crash_step", "penalised_steps",
               "other_id", "other_type", "window", "beta_ego", "beta_other", "share", "verdict", "rule", "rss",
-              "rss_case", "weight", "seconds"]
+              "rss_case", "right_of_way", "right_of_way_case", "priority", "weight", "seconds"]
 
 
 @dataclass
@@ -158,12 +160,13 @@ class BlameWeighting:
             self.cache.popitem(last=False)
         return scene
 
-    def attribute(self, event: Event, stem: str, scenario_id: str) -> Tuple[Optional[Blame], Optional[RssBlame]]:
+    def attribute(self, event: Event, stem: str, scenario_id: str) \
+            -> Tuple[Optional[Blame], Optional[RssBlame], Optional[RightOfWay]]:
         rollout = self.recorder.crash_rollout(event.step, event.other, stem, scenario_id)
         scene = scene_from_rollout(self._scene(stem), rollout)
         blame = None if self.model is None else rollout_blame(self.model, scene, rollout, self.cfg,
                                                                margin=self.margin)
-        return blame, rollout_rss(scene, rollout)
+        return blame, rollout_rss(scene, rollout), rollout_right_of_way(scene, rollout)
 
     def weight(self, blame: Optional[Blame], rss: Optional[RssBlame]) -> float:
         return rss_weight(rss) if self.mode == "rss" else penalty_weight(blame)
@@ -179,38 +182,41 @@ class BlameWeighting:
             for event in events:
                 t0 = time.time()
                 try:
-                    blame, rss = self.attribute(event, stem, scenario_id)
+                    blame, rss, right_of_way = self.attribute(event, stem, scenario_id)
                     error = None
                 except Exception as e:  # a long training run must not stop on one attribution
-                    blame, rss, error = None, None, e
+                    blame, rss, right_of_way, error = None, None, None, e
                 w = self.weight(blame, rss)
                 self.weights.append(w)
                 for i in event.transitions:
                     self.transitions[i][3] = weighted_reward(self.transitions[i][3], self.step_rewards[i], w,
                                                              self.penalty)
-                row = self._log(event, blame, rss, w, stem, seed, total_steps, time.time() - t0, error)
+                row = self._log(event, blame, rss, right_of_way, w, stem, seed, total_steps, time.time() - t0, error)
                 if self.verbose:
-                    print(f"collision at step {event.step} with {event.other}: {row['verdict']}, RSS {row['rss']} "
+                    print(f"collision at step {event.step} with {event.other}: {row['verdict']}, RSS {row['rss']}, "
+                          f"right of way {row['right_of_way']} ({row['right_of_way_case']}) "
                           f"(beta ego {row['beta_ego']}, other {row['beta_other']}), penalty weight {w:.2f} "
                           f"over {len(event.transitions)} steps ({row['seconds']} s)", flush=True)
         out = [tuple(t) for t in self.transitions]
         self.transitions = []
         return out
 
-    def _log(self, event, blame, rss, w, stem, seed, total_steps, seconds, error) -> dict:
+    def _log(self, event, blame, rss, right_of_way, w, stem, seed, total_steps, seconds, error) -> dict:
         row = {"episode": self.episodes, "total_steps": total_steps, "scene": stem, "scenario_index": seed,
                "adversary": self.adversary or "", "crash_step": event.step,
                "penalised_steps": len(event.transitions), "other_id": event.other, "other_type": "",
                "window": "", "beta_ego": "", "beta_other": "", "share": "",
                "verdict": "error" if error is not None else "unknown", "rule": "n/a", "rss": "n/a",
-               "rss_case": "", "weight": round(w, 4),
+               "rss_case": "", "right_of_way": "n/a", "right_of_way_case": "", "priority": "none",
+               "weight": round(w, 4),
                "seconds": round(seconds, 2)}
         if blame is not None:
             b = blame.as_row()
             row.update({k: b[k] for k in ("other_id", "other_type", "window", "verdict", "rule")})
             row.update({k: "" if b[k] is None else round(b[k], 4) for k in ("beta_ego", "beta_other", "share")})
-        if rss is not None:
-            row.update(rss.as_row())
+        for baseline in (rss, right_of_way):
+            if baseline is not None:
+                row.update(baseline.as_row())
         if error is not None:
             print(f"warning: collision at step {event.step} of scene {stem} not attributed "
                   f"({type(error).__name__}: {error}); full penalty kept", flush=True)

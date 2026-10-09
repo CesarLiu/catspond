@@ -10,7 +10,9 @@ A record (one pickle per scene and agent) holds
                 samples [N, 80, 2] and sample_log_prob [N]: the agent's motion set
                 goals: the agent's goal distribution
                 courtesy: per vehicle neighbour, its goal distribution with and
-                          without the agent, and their KL
+                          without the agent, and their KL; with a restricted
+                          KL (--courtesy-same-mode, --courtesy-valid-goals),
+                          each goal's "in_support" and the "support_mass"
 
 Goal distributions are stored sparsely -- the most probable goals covering
 ``top_mass`` of the probability, in scene coordinates -- since DenseTNT's grid
@@ -36,15 +38,22 @@ VERSION = 1
 DISPLAY_SAMPLES = 24
 
 
-def sparse_goals(dist, top_mass: float = 0.99, max_points: int = 6000) -> Dict[str, np.ndarray]:
+def sparse_goals(dist, top_mass: float = 0.99, max_points: int = 6000, support=None) -> Dict[str, np.ndarray]:
     """The most probable goals covering ``top_mass`` (at most ``max_points``),
-    in the scene frame, with their probabilities."""
+    in the scene frame, with their probabilities -- and, given the goals a
+    KL was restricted to (bool [G]), whether each is among them and the
+    mass they hold."""
     p = dist.log_prob.exp().detach().cpu().numpy()
     order = np.argsort(-p)
     n = min(int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1, max_points, len(p))
     keep = order[:n]
-    return {"points": dist.to_global(dist.goals[keep]).astype(np.float32),
-            "prob": p[keep].astype(np.float32), "mass": float(p[keep].sum())}
+    out = {"points": dist.to_global(dist.goals[keep]).astype(np.float32),
+           "prob": p[keep].astype(np.float32), "mass": float(p[keep].sum())}
+    if support is not None:
+        support = support.detach().cpu().numpy() if torch.is_tensor(support) else np.asarray(support)
+        out["in_support"] = support[keep].astype(bool)
+        out["support_mass"] = float(p[support].sum())
+    return out
 
 
 def _numpy(x) -> Optional[np.ndarray]:
@@ -71,7 +80,9 @@ def capture_frame(model, scene: Scene, agent: int, step: int, cfg: Responsibilit
     courtesy = {}
     for b, (with_a, without_a) in record["courtesy"].items():
         tid = scene.track_ids[b]
-        courtesy[tid] = {"with": sparse_goals(with_a, top_mass), "without": sparse_goals(without_a, top_mass),
+        support = record["courtesy_support"].get(b)
+        courtesy[tid] = {"with": sparse_goals(with_a, top_mass, support=support),
+                         "without": sparse_goals(without_a, top_mass, support=support),
                          "kl": obs.per_neighbour[tid]["courtesy"]}
     frame = {
         "step": step,

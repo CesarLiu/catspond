@@ -7,6 +7,7 @@ import os
 from metadrive.envs.real_data_envs.waymo_env import WaymoEnv
 from advgen.adv_generator import AdvGenerator  # noqa: F401
 from responsibility.adversarial import make_adv_generator, selection_name
+from responsibility.swap import is_swapped, scene_split
 from responsibility.blame import MARGIN
 
 from saferl_algo import TD3,utils
@@ -90,6 +91,9 @@ if __name__ == "__main__":
 	parser.add_argument('--blame_margin', type=float, default=MARGIN,
 						help='m; the share is used only when the two sides differ by more (else the full penalty)')
 	parser.add_argument('--blame_device', default=None, help='DenseTNT device for the attribution (default: cuda if available)')
+	parser.add_argument('--scenes_dir', default=os.path.join(os.path.dirname(__file__), "raw_scenes_500"),
+						help="scene folder; scenes 0-399 train and 400 on test, counted over the files present "
+						 "(e.g. raw_scenes_500_swapped from swap_roles.py: 369 / 90)")
 	parser.add_argument('--no_store_map', action='store_true',
 						help="rebuild each episode's map instead of keeping every map built (store_map); "
 							 "a run then held 2.2 GB after 8 min instead of 5 GB, at about two thirds of the speed")
@@ -105,6 +109,9 @@ if __name__ == "__main__":
 		file_name += "_" + args.blame_weighting  # e.g. cat_share, cat_fair1_0.3_share, cat_rss
 		if args.blame_weighting == 'share' and args.blame_margin != MARGIN:
 			file_name += f"{args.blame_margin:g}"
+	if is_swapped(args.scenes_dir):
+		file_name += "_swapped"  # ego and adversary swapped (swap_roles.py), e.g. cat_swapped
+	n_train, n_test = scene_split(args.scenes_dir)
 	model_name = f"{file_name}_s{args.seed}"  # per seed: runs with several seeds must not share one model file
 	logger = SafeLogger(exp_name=file_name, env_name=args.env, seed=args.seed,
 						fieldnames=['route_completion_normal','crash_rate_normal','route_completion_adv','crash_rate_adv'])
@@ -113,9 +120,9 @@ if __name__ == "__main__":
 		os.makedirs("./models")
 
 	config_train = dict(
-				data_directory=os.path.join(os.path.dirname(__file__), "./raw_scenes_500"),
+				data_directory=args.scenes_dir,
 				start_scenario_index = 0,
-				num_scenarios=400,
+				num_scenarios=n_train,
 				sequential_seed = False,
 				force_reuse_object_name = True,
 				horizon = 50,
@@ -129,9 +136,9 @@ if __name__ == "__main__":
 			)
 	
 	config_test = dict(
-				data_directory=os.path.join(os.path.dirname(__file__), "./raw_scenes_500"),
-				start_scenario_index = 400,
-				num_scenarios=100,
+				data_directory=args.scenes_dir,
+				start_scenario_index = n_train,
+				num_scenarios=n_test,
 				crash_vehicle_done=True,
 				sequential_seed = True,
 				force_reuse_object_name = True,
@@ -253,7 +260,7 @@ if __name__ == "__main__":
 				last_eval_step = t
 				env.close()
 				eval_env = WaymoEnv(config=config_test)
-				evalRC_normal, evalCrash_normal, evalRC_adv, evalCrash_adv = eval_policy(policy, eval_env, adv_generator)
+				evalRC_normal, evalCrash_normal, evalRC_adv, evalCrash_adv = eval_policy(policy, eval_env, adv_generator, eval_episodes=n_test)
 				eval_env.close()
 				logger.update([evalRC_normal, evalCrash_normal, evalRC_adv, evalCrash_adv], total_steps=t + 1)
 				

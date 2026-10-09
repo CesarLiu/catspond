@@ -32,3 +32,17 @@ def test_first_overlap_with_the_logged_ego():
     assert step is not None and 25 <= step <= 32
     far = make_scene({"0": track((10, 0), (10, 0)), "1": track((30, 300), (0, -10), heading=-np.pi / 2)})
     assert first_overlap(far, 1, 0) is None
+
+
+def test_the_index_is_kept_next_to_the_rule_folder(tmp_path):
+    import json
+
+    from scripts.responsibility.export_adv_scenes import open_index
+
+    out = tmp_path / "cat"
+    out.mkdir()
+    (out / "index.json").write_text(json.dumps({"0": {"rule": "cat"}}))  # an older export's layout
+    path, index = open_index(out)
+    assert path == tmp_path / "cat.index.json" and index == {"0": {"rule": "cat"}}
+    assert list(out.iterdir()) == []  # only scenes stay inside: MetaDrive asserts every file is one
+    assert open_index(tmp_path / "fair1_0.3")[1] == {}

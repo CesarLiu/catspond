@@ -12,6 +12,11 @@ are kept if any of these holds over the window [k, k + horizon]:
            but at least one occupation in the window <= pet_threshold
   ttc      first contact of the footprints under constant velocity and
            heading from step k <= ttc_threshold
+
+ooi_neighbours is the simplified alternative (``--use-ooi``): the other
+objects of interest of the scenario, whatever the evidence, so that one
+scene is measured for one pair (in CAT's scenes: the self-driving car and
+the adversary) in every window.
 """
 
 from dataclasses import dataclass
@@ -109,6 +114,22 @@ def interacting_neighbours(scene: Scene, query: int, step: int, horizon: int,
     if cfg.max_neighbors is not None:
         keep = keep[: cfg.max_neighbors]
     return {near[j]: {k: float(v[j]) for k, v in scores.items()} for j in keep}
+
+
+def ooi_neighbours(scene: Scene, query: int, step: int, horizon: int,
+                   cfg: Optional[InteractionConfig] = None) -> Dict[int, Dict[str, float]]:
+    """{neighbour: its interaction scores} for the scenario's other objects
+    of interest present at ``step``, interacting or not."""
+    cfg = cfg or InteractionConfig()
+    if query not in scene.objects_of_interest:
+        raise ValueError(f"agent {scene.track_ids[query]} is not an object of interest of the scenario")
+    if not scene.valid[query, step]:
+        return {}
+    others = [i for i in scene.objects_of_interest if i != query and scene.valid[i, step]]
+    if not others:
+        return {}
+    scores = interaction_scores(scene, query, others, step, horizon, cfg)
+    return {b: {k: float(v[j]) for k, v in scores.items()} for j, b in enumerate(others)}
 
 
 def all_neighbours_within(scene: Scene, query: int, step: int, radius: float) -> List[int]:

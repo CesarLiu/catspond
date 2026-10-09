@@ -30,8 +30,10 @@ full metric horizon before any other end. Every collision with another road
 user is also attributed (responsibility/blame.py: the ego's and the other's
 safety responsibility toward each other in the 2 s before it; "rule": the
 rear-end rule's verdict; "rss": Responsibility-Sensitive Safety's,
-responsibility/rss.py -- the baselines it is compared with) and written to
-OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
+responsibility/rss.py; "right_of_way": the traffic-law verdict for
+conflicts between different paths, with the rule that gave the priority and
+who held it, responsibility/right_of_way.py -- the baselines it is compared
+with) and written to OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
 
 --valid-counterfactuals (or the separate --lane-route, --route-tolerance,
 --drivable-half-width, --kinematics, --collision-filter) restricts beta_s to
@@ -40,8 +42,16 @@ and every branch after the log included), on the road, kinematically
 feasible, through no third agent (responsibility/motion_filter.py,
 responsibility/lanes.py); the per-neighbour observations then also record
 how much of the set was kept. It also takes beta_c over the neighbour's
-reachable goals only (--courtesy-valid-goals). With DenseTNT, --motion-set weighted uses its whole goal
-grid, probability-weighted, instead of 40 samples.
+reachable goals only (--courtesy-valid-goals). On a map without lane topology
+(perception), --intent tells the same intent from the trajectories instead
+(responsibility/intent.py), and --drivable-edges judges the drivable area
+by road edges instead of lane centrelines (responsibility/edges.py). --use-ooi measures the agent against the scenario's
+other object of interest only, in every window, instead of the neighbours
+interaction evidence selects. --courtesy-same-mode lanes|path takes beta_c over
+the neighbour's goals in its own logged drive mode only. With DenseTNT, --motion-set weighted uses its whole goal
+grid, probability-weighted, instead of 40 samples; --motion-set topk uses its --n-samples most probable
+goals, probability-weighted; --motion-set nms uses --n-samples goals spread over the distribution by CAT's
+goal non-maximum suppression, each weighted by the probability of the goals nearest to it.
 
 Example (from the repository root):
     python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \\
@@ -69,7 +79,7 @@ from responsibility.blame import rollout_blame  # noqa: E402
 from responsibility.models import add_model_arguments, load_model, model_settings  # noqa: E402
 from responsibility.motion_filter import MotionFilterConfig  # noqa: E402
 from responsibility.interaction import InteractionConfig  # noqa: E402
-from responsibility.metrics import ResponsibilityConfig, scene_responsibility  # noqa: E402
+from responsibility.metrics import MOTION_SETS, ResponsibilityConfig, scene_responsibility  # noqa: E402
 from responsibility.records import run_scene, save_record  # noqa: E402
 from responsibility.rollouts import (  # noqa: E402
     last_window_step,
@@ -78,13 +88,15 @@ from responsibility.rollouts import (  # noqa: E402
     rollout_files,
     scene_from_rollout,
 )
+from responsibility.right_of_way import rollout_right_of_way  # noqa: E402
 from responsibility.rss import rollout_rss  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
               "n_neighbours", "safety_against", "courtesy_toward"]
 CRASH_FIELDS = ["scene", "policy", "adv_mode", "crash_step", "window", "other_id", "other_type", "adversary",
-                "beta_ego", "beta_other", "share", "verdict", "rule", "rss", "rss_case"]
+                "beta_ego", "beta_other", "share", "verdict", "rule", "rss", "rss_case", "right_of_way",
+                "right_of_way_case", "priority"]
 
 
 def _m(value):
@@ -98,13 +110,14 @@ def blame_row(model, scene, agent, rollout, cfg):
     adversary = rollout["adversary"]["track_id"] if rollout["adversary"] is not None else ""
     row = {"scene": rollout["scene_file"], "policy": rollout["policy"], "adv_mode": rollout["adv_mode"],
            "crash_step": step, "adversary": adversary, "verdict": "unknown", "rule": "n/a", "rss": "n/a",
-           "rss_case": ""}
+           "rss_case": "", "right_of_way": "n/a", "right_of_way_case": "", "priority": "none"}
     blame = rollout_blame(model, scene, rollout, cfg) if agent == scene.sdc else None
     if blame is not None:
         row.update({k: v for k, v in blame.as_row().items() if k in CRASH_FIELDS})
-    rss = rollout_rss(scene, rollout) if agent == scene.sdc else None  # also where the model cannot attribute
-    if rss is not None:
-        row.update(rss.as_row())
+    if agent == scene.sdc:  # the rule-based verdicts, also where the model cannot attribute
+        for baseline in (rollout_rss(scene, rollout), rollout_right_of_way(scene, rollout)):
+            if baseline is not None:
+                row.update(baseline.as_row())
     row["adversary"] = int(bool(adversary) and row.get("other_id") == adversary)
     return row
 
@@ -123,9 +136,12 @@ def parse_args():
     d = ResponsibilityConfig()
     p.add_argument("--n-samples", type=int, default=d.n_safety_samples)
     p.add_argument("--cvar-alpha", type=float, default=d.cvar_alpha)
-    p.add_argument("--motion-set", default=d.motion_set, choices=["sampled", "weighted"],
+    p.add_argument("--motion-set", default=d.motion_set, choices=MOTION_SETS,
                    help="weighted: the model's whole motion set, probability-weighted "
-                        "(densetnt: its goal grid up to 0.999 of the mass; mtr: its 64 intentions).")
+                        "(densetnt: its goal grid up to 0.999 of the mass; mtr: its 64 intentions); "
+                        "topk: its --n-samples most probable members, probability-weighted; "
+                        "nms: --n-samples members spread by CAT's goal NMS, each weighted by the "
+                        "probability nearest to it (responsibility/modes.py).")
     f = MotionFilterConfig()
     g = p.add_argument_group("valid counterfactuals for beta_s (responsibility/motion_filter.py)")
     g.add_argument("--lane-route", action="store_true",
@@ -133,10 +149,25 @@ def parse_args():
                         "their side neighbours and what follows the log.")
     g.add_argument("--courtesy-valid-goals", action="store_true",
                    help="beta_c over the neighbour's goals on lanes it can reach only.")
+    g.add_argument("--courtesy-same-mode", choices=["lanes", "path"], default=d.courtesy_same_mode,
+                   help="beta_c over the neighbour's goals in its own logged drive mode only: on its lane route "
+                        "(lanes, HD map) or within --courtesy-path-lateral of its logged path (path, no map). "
+                        "Overrides --courtesy-valid-goals.")
+    g.add_argument("--courtesy-path-lateral", type=float, default=d.courtesy_path_lateral, help="m.")
+    g.add_argument("--intent", action="store_true",
+                   help="Same intent without lane topology (responsibility/intent.py), for perceived maps: "
+                        "heading within --intent-heading of the logged path where the alternative is, "
+                        "within --intent-lateral of that path, and with --intent-edges across no road edge.")
+    g.add_argument("--intent-heading", type=float, default=f.intent_heading, help="deg.")
+    g.add_argument("--intent-lateral", type=float, default=f.intent_lateral, help="m; <= 0 disables.")
+    g.add_argument("--intent-edges", action="store_true", help="--intent also uses the map's road edges.")
     g.add_argument("--route-tolerance", type=float, default=f.route_tolerance,
                    help="m: keep only alternatives within this of the agent's logged route (same intent).")
     g.add_argument("--drivable-half-width", type=float, default=f.drivable_half_width,
                    help="m: keep only alternatives within this of a vehicle lane centreline.")
+    g.add_argument("--drivable-edges", action="store_true",
+                   help="Keep only alternatives whose path crosses no road edge (one the logged path crosses "
+                        "does not count); for a map built by perception, instead of --drivable-half-width.")
     g.add_argument("--kinematics", action="store_true", help="Keep only kinematically feasible alternatives.")
     g.add_argument("--collision-filter", action="store_true",
                    help="Drop alternatives that drive through a third agent's logged future.")
@@ -152,6 +183,9 @@ def parse_args():
     p.add_argument("--top-mass", type=float, default=0.99,
                    help="Goal distributions in records keep the most probable goals covering this mass.")
     i = InteractionConfig()
+    p.add_argument("--use-ooi", action="store_true",
+                   help="Neighbours: the scenario's other objects of interest in every window, whatever the "
+                        "interaction evidence (one pair per scene); --agent must be one of them (sdc or adv).")
     p.add_argument("--max-neighbors", type=int, default=i.max_neighbors)
     p.add_argument("--gap-threshold", type=float, default=i.gap_threshold)
     p.add_argument("--pet-threshold", type=float, default=i.pet_threshold)
@@ -164,7 +198,9 @@ def parse_args():
 
 # settings added after runs were made, with the value those runs used
 LATER_SETTINGS = {"model": {"name": "densetnt"}}
-LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig()), "courtesy_valid_goals": False}
+LATER_RESPONSIBILITY = {"motion_set": "sampled", "filter": asdict(MotionFilterConfig()), "courtesy_valid_goals": False,
+                        "use_ooi": False, "courtesy_same_mode": None,
+                        "courtesy_path_lateral": ResponsibilityConfig().courtesy_path_lateral}
 
 
 def same_settings(stored, settings) -> bool:
@@ -174,18 +210,24 @@ def same_settings(stored, settings) -> bool:
     for key, value in LATER_SETTINGS.items():
         stored.setdefault(key, value)
     stored["responsibility"] = {**LATER_RESPONSIBILITY, **stored.get("responsibility", {})}
+    # filters added later were off in the runs that predate them
+    stored["responsibility"]["filter"] = {**LATER_RESPONSIBILITY["filter"], **stored["responsibility"]["filter"]}
     return stored == json.loads(json.dumps(settings))
 
 
-def pick_agent(scene: Scene, which: str) -> int:
+def pick_agent(scene: Scene, which: str, use_ooi: bool = False) -> int:
     if which == "sdc":
-        return scene.sdc
-    if which == "adv":
+        agent = scene.sdc
+    elif which == "adv":
         others = [i for i in scene.objects_of_interest if i != scene.sdc]
         if not others:
             raise ValueError("no second object of interest")
-        return others[0]
-    return scene.index(which)
+        agent = others[0]
+    else:
+        agent = scene.index(which)
+    if use_ooi and agent not in scene.objects_of_interest:
+        raise ValueError(f"--use-ooi: agent {scene.track_ids[agent]} is not an object of interest")
+    return agent
 
 
 def main():
@@ -193,14 +235,18 @@ def main():
     valid = args.valid_counterfactuals
     motion_filter = MotionFilterConfig(
         lane_route=args.lane_route or valid, route_tolerance=args.route_tolerance,
+        intent=args.intent, intent_heading=args.intent_heading,
+        intent_lateral=args.intent_lateral if args.intent_lateral > 0 else None, intent_edges=args.intent_edges,
         drivable_half_width=(args.drivable_half_width if args.drivable_half_width is not None
                              else (3.0 if valid else None)),
+        drivable_edges=args.drivable_edges,
         kinematics=args.kinematics or valid, collision=args.collision_filter or valid)
     cfg = ResponsibilityConfig(
         filter=motion_filter, courtesy_valid_goals=args.courtesy_valid_goals or valid,
+        courtesy_same_mode=args.courtesy_same_mode, courtesy_path_lateral=args.courtesy_path_lateral,
         n_safety_samples=args.n_samples, cvar_alpha=args.cvar_alpha, motion_set=args.motion_set,
         d_sat=args.d_sat if args.d_sat > 0 else None, metric_horizon=args.horizon,
-        window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed,
+        window_stride=args.stride, courtesy=not args.no_courtesy, seed=args.seed, use_ooi=args.use_ooi,
         interaction=InteractionConfig(max_neighbors=args.max_neighbors, gap_threshold=args.gap_threshold,
                                       pet_threshold=args.pet_threshold, ttc_threshold=args.ttc_threshold),
     )
@@ -250,7 +296,7 @@ def main():
             else:
                 scene = Scene.load(path)
             try:
-                agent = pick_agent(scene, args.agent)
+                agent = pick_agent(scene, args.agent, args.use_ooi)
             except ValueError as e:
                 print(f"{path.name}: skipped ({e})", flush=True)
                 observations = []

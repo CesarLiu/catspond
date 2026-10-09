@@ -98,3 +98,68 @@ def test_offline_rendering_from_a_record(tmp_path):
                                            ego_heatmap=True)
     assert gif.exists() and radius >= 30.0
     assert len(list((tmp_path / "video" / "frames").glob("t_*.png"))) == len(record["frames"])
+
+
+def test_live_settings_take_use_ooi_and_a_runs_filters(tmp_path):
+    import json
+    from dataclasses import asdict
+
+    import pytest
+
+    from responsibility.motion_filter import MotionFilterConfig
+
+    args = SimpleNamespace(run=None, n_samples=40, horizon=20, stride=5, seed=0, motion_set="sampled", use_ooi=True,
+                           courtesy_same_mode=None)
+    assert vis.config_from(args).use_ooi
+    cfg = ResponsibilityConfig(filter=MotionFilterConfig(drivable_edges=True))
+    (tmp_path / "config.json").write_text(json.dumps({"responsibility": asdict(cfg)}))
+    run = SimpleNamespace(**{**vars(args), "run": str(tmp_path)})
+    with pytest.raises(SystemExit, match="without --use-ooi"):
+        vis.config_from(run)
+    loaded = vis.config_from(SimpleNamespace(**{**vars(run), "use_ooi": False}))
+    assert isinstance(loaded.filter, MotionFilterConfig) and loaded.filter.drivable_edges
+
+
+def test_live_mode_loads_the_model_once_and_swaps_the_objects_of_interest(tmp_path, monkeypatch):
+    import pickle
+
+    import responsibility.models
+
+    scene = make_scene({"0": track((0.0, 0.0), (10.0, 0.0)), "1": track((30.0, 4.0), (10.0, 0.0))})
+    for stem in ("3", "5"):
+        with open(tmp_path / f"{stem}.pkl", "wb") as f:
+            pickle.dump(scene.to_description(), f)
+    loads = []
+
+    def load_model(args, device):
+        loads.append(device)
+        return GoalModel()
+
+    monkeypatch.setattr(responsibility.models, "load_model", load_model)
+    args = SimpleNamespace(scene=["3", "5"], scenes=str(tmp_path), agent=["sdc", "adv"], use_ooi=True, run=None,
+                           device="cpu", n_samples=8, horizon=20, stride=20, seed=0, motion_set="sampled",
+                           courtesy_same_mode=None)
+    records = list(vis.live_records(args))
+    assert [name for name, _ in records] == ["3_sdc", "3_adv", "5_sdc", "5_adv"]
+    assert loads == ["cpu"]  # once for all four
+    sdc, adv = records[0][1], records[1][1]
+    assert sdc["agent_id"] == "0" and adv["agent_id"] == "1"
+    neighbours = [set(f["observation"]["per_neighbour"]) for f in adv["frames"]]
+    assert neighbours and all(n == {"0"} for n in neighbours)  # the roles swapped
+
+
+def test_records_mark_the_goals_a_restricted_courtesy_kl_was_taken_over(tmp_path):
+    cfg = ResponsibilityConfig(window_stride=20, courtesy_same_mode="path", courtesy_path_lateral=2.0)
+    _, record = run_scene(GoalModel(), _scene(), 0, cfg)
+    pairs = [pair for f in record["frames"] for pair in f["courtesy"].values()]
+    assert pairs
+    for pair in pairs:
+        for side in ("with", "without"):
+            inside = pair[side]["in_support"]
+            assert inside.dtype == bool and len(inside) == len(pair[side]["prob"])
+        assert 0.0 < pair["with"]["support_mass"] < 1.0  # a 2 m band leaves part of the goals out
+    plain = run_scene(GoalModel(), _scene(), 0, ResponsibilityConfig(window_stride=20))[1]
+    assert all("in_support" not in p["with"] for f in plain["frames"] for p in f["courtesy"].values())
+    save_record(record, tmp_path / "r.pkl")
+    (gif, _), _ = vis.render_record(load_record(tmp_path / "r.pkl"), tmp_path / "video")
+    assert gif.exists()

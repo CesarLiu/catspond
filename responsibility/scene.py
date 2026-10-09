@@ -174,6 +174,14 @@ def scene_files(directory) -> List[Path]:
     return sorted(files, key=lambda p: (int(p.stem) if p.stem.isdigit() else float("inf"), p.stem))
 
 
+def sidecar_index(directory) -> Path:
+    """Where an index of a scene folder is kept: <folder>.index.json next to
+    it, since MetaDrive asserts that every file inside a scene folder is a
+    scene (.pkl)."""
+    directory = Path(directory)
+    return directory.with_name(directory.name + ".index.json")
+
+
 def cat_agent_order(scene: Scene) -> List[int]:
     """The agent order of ``AdvGenerator._parse``: the self-driving car, the
     other object of interest (the adversary), then the rest."""
@@ -201,6 +209,10 @@ def _map_arrays(scene: Scene) -> Dict[str, np.ndarray]:
     }
     count = 0
     for key, feature in scene.map_features.items():
+        if feature["type"] not in MAP_TYPES:
+            # WOMD v1.2's DRIVEWAY (type 20) and MetaDrive's UNKNOWN lines and edges: DenseTNT was
+            # trained on v1.1 maps without them (and asserts types below 20), so it sees the same kinds
+            continue
         kind = MAP_TYPES[feature["type"]]
         if kind == 17:
             poly = feature["position"]

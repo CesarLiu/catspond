@@ -496,6 +496,8 @@ ls $P/*/*/windows*.csv | wc -l
 ```bash
 P=logs/responsibility/policies
 runs=$(ls -d $P/replay/none $P/replay/cat $P/replay/fair* $P/td3_*/none $P/td3_*/cat $P/td3_*/fair*)
+# 给已有的 crashes*.csv 补上（或重算）规则定责：RSS 和路权。只要场景和 rollout，不用 GPU，每个碰撞不到 1 秒
+python -m scripts.responsibility.attribute_rules --runs $runs
 # 在回放的 logged 驾驶上拟合等级
 python -m scripts.responsibility.fit_levels --runs $runs --fit-runs $P/replay/none --out-dir $P/levels
 # 阈值取自第一个 run（回放的 logged 驾驶）
@@ -524,12 +526,39 @@ cat $P/compare/comparison.md
 - **β 的消融**：`td3_cat_fair2_0.1` 对 `td3_cat_fairinf_0.5`。如果两者一样，只约束可避免性就够了；如果前者更少胆怯，或者在 `none` 上开得更像人，β 就有它自己的作用。
 - **M2.3**：`td3_cat_share` 对 `td3_cat`。完成率提高、胆怯减少，自车责任碰撞不增加。
 - **RSS 基线**：`td3_cat_share` 对 `td3_cat_rss`。反事实的定责是否比 RSS 的规则定责更好。同时看 `RSS agree`：两种定责在真实碰撞上的一致率。
+- **路权基线**（`responsibility/right_of_way.py`，加州交规 CVC）：RSS 只管同向碰撞，交叉、转弯、汇入的碰撞由路权规则定责。看 `RoW agree`（与反事实定责的一致率），以及 `comparison.csv` 里的 `right_of_way_coverage` 和 `baseline_coverage`（RSS 或路权给出判定的碰撞占比；路权主要补上 RSS 判不了的交叉、转弯和汇入碰撞）。
 
 打包带回：
 
 ```bash
 tar czf policies_$(date +%m%d).tgz $P/compare $P/levels $P/*/*/crashes*.csv logs/rollouts logs/blame
 ```
+
+## 10d. 把 WOMD 分片转成 CAT 格式，并做路权规则的留出验证（不用 GPU）
+
+CAT 的 500 个场景是路权规则的开发集，规则是看着这些场景里的错误补出来的。留出验证用 WOMD `validation_interactive` 的其余场景，每个场景取它的两个 object of interest 作为一对。
+
+```bash
+W=~/womd_v1_2_1/validation_interactive            # WOMD v1.2.1 的 tfrecord 分片（L4 服务器上现有 14 个，共 150 个）
+C=~/womd_v1_2_1/cat_format/validation_interactive # 转成 CAT 格式的场景
+# 转换：用 CAT 自己的转换函数，两个 OOI 都是车辆的场景全部保留，index.csv 标注 sdc_in_ooi 和 in_cat；可续跑
+~/venvs/cat39/bin/python -m scripts.responsibility.convert_womd_split --tfrecords $W --out-dir $C --workers 8
+# 先试点 200 个场景：看 errors 是否为 0
+python -m scripts.responsibility.validate_right_of_way --scenes $C/scenes --n 200 \
+  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 8 --out-dir logs/responsibility/right_of_way/pilot
+# 正式运行（可续跑）
+python -m scripts.responsibility.validate_right_of_way --scenes $C/scenes \
+  --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 8 \
+  --out-dir logs/responsibility/right_of_way/validation_interactive
+cat logs/responsibility/right_of_way/validation_interactive/summary.md
+```
+
+- 转换速度：CAT 的 497 个场景单进程 54 s（约 0.1 s/场景）。其余 136 个分片要用在 Waymo 官网接受过许可的账号下载到 `$W`（本机的服务账号无权访问 Waymo 的存储桶，2026-10-09 试过，返回 403），然后再跑同一条命令，已转换的分片会跳过。
+- 转出的场景也能直接给开环的责任计算用（`compute_responsibility --scenes $C/scenes --use-ooi`）。
+
+- 速度：500 个场景、8 个进程用 48 s。
+- 要看的：每条规则"有路权者先通过"的比例和 95% 置信区间；`CVC: first-in` 和 `CVC: yield-right` 两行，用来检验"无管控路口默认关闭 CVC 规则"这个决定在留出集上是否仍然成立。
+- 带回：`pairs.csv` 和 `summary.md`。
 
 ## 11. ⚠ UniTraj MTR：第二个预测模型（UNITRAJ_PLAN.md 的 U0、U2、U3、U5）
 

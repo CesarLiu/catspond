@@ -50,6 +50,145 @@ distribution more than a far one, that DenseTNT's partner slot is
 immaterial (~1e-7 nats), and that a replayed rollout (below) gives the logged
 values once the objects MetaDrive does not spawn are left out.
 
+### More scenes: a whole WOMD split
+
+CAT's 500 scenes are a convenience sample. CAT converted 14 of the 150
+validation_interactive shards (`scripts/convert_WOMD_to_MD.py`) and kept
+the 91-step scenarios whose self-driving car is one of the two objects of
+interest (`scripts/select_cases.py`). There was no selection by
+interaction or criticality, and 3 scenes are duplicates (497 ids).
+
+`convert_womd_split` converts a whole split with CAT's own conversion
+(`convert_scenario`), so the scenes have the format of `raw_scenes_500`:
+
+- it keeps every scenario whose two objects of interest are vehicles;
+- `index.csv` beside the scene folder marks `sdc_in_ooi` (the scenes CAT's
+  closed loop can use) and `in_cat`;
+- one process per shard; the run resumes;
+- it runs in cat39, with the WOMD protos borrowed from the catk environment
+  (same protobuf version).
+
+```bash
+python -m scripts.responsibility.convert_womd_split --tfrecords ~/womd_v1_2_1/validation_interactive \
+    --out-dir ~/womd_v1_2_1/cat_format/validation_interactive --workers 8   # --shards 1 --limit 20: a test
+```
+
+Converting CAT's 497 scenarios from WOMD v1.2.1 this way (54 s, one
+process) gives the same tracks as CAT's v1.1 files: the same agents and
+ids, positions equal to the bit. The maps differ: v1.2.1 reprocessed them,
+the light count differs in 222 scenes, and driveways were added. The
+right-of-way check moves from 87.3% to 86.5% on them.
+
+v1.2 adds DRIVEWAY features, and MetaDrive writes UNKNOWN for unknown lines
+and edges. DenseTNT's input leaves both out, both here (`scene.py`) and in
+CAT's `advgen`, since it was trained on v1.1 maps without them and asserts
+types below 20. CAT's 500 scenes contain neither, so their inputs are
+unchanged. MetaDrive builds its map from lanes, lines and edges only, so it
+ignores them anyway.
+
+DenseTNT also asserts map feature ids below 1000 for the points it uses.
+Ids reach 1000 in 8.1% of the 3166 scenes of the local shards, but the
+input keeps at most 20000 map points, in id order. That cap cuts the map
+in 237 of CAT's 500 scenes (CAT's behaviour, kept). No id of 1000 or more
+reached DenseTNT's view (80 m around a point 30 m ahead) at any step in
+CAT's scenes, their v1.2.1 conversions, or 444 new scenes.
+
+So the new scenes work in the closed loop too. `cat_advgen.py` on three
+new scenes with driveways ran MetaDrive and CAT's generation
+(`SDL_VIDEODRIVER=dummy` on a headless machine): 2 of 3 attacks succeeded,
+0.5 s per generation. The closed loop needs a folder of `sdc_in_ooi`
+scenes numbered `0.pkl` … in MetaDrive's order. `cat_RLtrain.py` takes
+scenes 0–399 for training and the rest for testing (`swap.scene_split`).
+
+## Command reference
+
+Run from the repository root with the environment active. The sections below
+explain each step; this is the whole pipeline in one place, for the
+simplified evaluation of one pair per scene (`--use-ooi`: the self-driving
+car and CAT's adversary) with the NMS motion set, the most accurate 40-trajectory set
+measured (see "Valid counterfactuals" under Design decisions).
+
+**Compute.** `run_h200.sh` runs every agent in shards, then the summaries and
+the levels, into `OUT/<agent>/`:
+
+```bash
+OUT=logs/responsibility/ooi_nms AGENTS="sdc adv" SHARDS=8 RECORDS=1 \
+EXTRA="--use-ooi --motion-set nms --valid-counterfactuals" \
+bash scripts/responsibility/run_h200.sh
+```
+
+The same for one agent by hand (`--agent adv` swaps the roles of the pair):
+
+```bash
+python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500 \
+    --out-dir logs/responsibility/ooi_nms/sdc --agent sdc \
+    --use-ooi --motion-set nms --valid-counterfactuals --save-records --device cuda
+```
+
+- Shards: `--num-shards N --shard-index i` for i = 0 … N−1, all into the
+  same `--out-dir`. Each shard writes `windows.shard-<i>-of-<N>.csv`, and
+  every reader takes both forms.
+- A subset: `--n 30 --first 0`. Leaving out β_c is 3–10× faster:
+  `--no-courtesy`.
+- `--valid-counterfactuals` is `--lane-route`, `--drivable-half-width 3`,
+  `--kinematics`, `--collision-filter` and `--courtesy-valid-goals`.
+- On a map built by perception (no lane topology), use
+  `--intent --drivable-edges --kinematics --collision-filter` instead.
+- To take β_c only over the neighbour's own logged drive mode, add
+  `--courtesy-same-mode lanes` (HD map) or `--courtesy-same-mode path`
+  (no map needed; 6 m of its logged path). This overrides
+  `--courtesy-valid-goals`.
+- Motion sets: `sampled` (default), `weighted` (the reference; a median of
+  944 trajectories per window), `topk`, `nms`.
+- MTR instead of DenseTNT: `--model mtr --checkpoint <ckpt>`.
+- A driving policy instead of the log:
+  `--rollouts rollouts/<policy>/<adversary>`.
+- An output directory resumes. Its `config.json` pins the settings, and a
+  run with other settings is refused.
+
+**Summarise and fit levels** (`run_h200.sh` does both):
+
+```bash
+python -m scripts.responsibility.summarize_responsibility --run logs/responsibility/ooi_nms/sdc
+python -m scripts.responsibility.fit_levels \
+    --runs logs/responsibility/ooi_nms/sdc logs/responsibility/ooi_nms/adv \
+    --out-dir logs/responsibility/ooi_nms/levels
+```
+
+**Visualise.**
+
+- Offline, from records, with no model needed:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility \
+      --record logs/responsibility/ooi_nms/sdc/records/{17,23,42}.pkl \
+      --levels logs/responsibility/ooi_nms/levels/levels.csv \
+      --out-dir logs/responsibility/ooi_nms/videos_sdc
+  ```
+
+- Live, with the model loaded once for every scene and both roles:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility --scene 17 23 42 \
+      --agent sdc adv --use-ooi --motion-set nms --device cuda \
+      --out-dir logs/responsibility/videos_ooi
+  ```
+
+- Live, with a run's settings, so the values equal its `windows.csv`:
+
+  ```bash
+  python -m scripts.responsibility.visualize_responsibility --scene 17 23 \
+      --run logs/responsibility/ooi_nms/sdc --agent sdc --use-ooi \
+      --levels logs/responsibility/ooi_nms/levels/levels.csv \
+      --out-dir logs/responsibility/video_17_23
+  ```
+
+One video goes to `--out-dir`. Several go to `--out-dir/<scene>`, or to
+`--out-dir/<scene>_<agent>` with several agents. With `--run`, the motion
+set, the filters and `use_ooi` come from the run's `config.json`, and
+`--use-ooi` is refused for a run made without it. A DenseTNT process takes a
+few hundred MB of GPU memory.
+
 ## Is the ego aggressive?
 
 ```bash
@@ -63,7 +202,7 @@ Step 1 writes `windows.csv` (one row per scene and context step: β_s, β_c,
 speed, and the neighbour each maximum came from) and per-neighbour details in
 `obs/<scene>.pkl`; it is resumable. Useful flags: `--agent adv` (CAT's
 adversary) or a track id, `--stride`, `--n-samples`, `--d-sat`,
-`--no-courtesy` (3–10× faster).
+`--no-courtesy` (3–10× faster), `--use-ooi` (below).
 
 Step 2 flags a window when β_s or β_c exceeds a threshold and a scene when it
 has a flagged window, and writes `summary/scenes.csv`,
@@ -92,13 +231,16 @@ python -m scripts.responsibility.visualize_responsibility --scene 17 \
     --out-dir logs/responsibility/video_17
 ```
 
-One frame per context step t_k (`frames/t_XXX.png`), stitched into
+`--scene` and `--record` take several values (the model is loaded once),
+and `--agent sdc adv` renders each scene for both objects of interest; see
+the command reference above. One frame per context step t_k (`frames/t_XXX.png`), stitched into
 `responsibility.gif` and `responsibility.mp4` (the MP4 needs OpenCV,
 `opencv-python-headless`, which `setup_env.sh` installs). Each frame shows:
 
 - **scene:** the map, every agent at t_k with 1 s of history, the agent's
-  motion set (DenseTNT goal samples; the first 2 s solid, coloured by goal
-  probability), its logged future, and the neighbours it was compared with,
+  motion set exactly as β_s scored it (DenseTNT goal samples, or with
+  `--motion-set weighted|topk|nms` the weighted set; the first 2 s solid,
+  coloured by goal probability or weight), its logged future, and the neighbours it was compared with,
   with their logged futures. The neighbour behind β_s is outlined red, the one
   behind β_c blue. `--ego-heatmap` adds the agent's own goal distribution.
 - **courtesy:** that neighbour's goal distribution with the agent in the scene
@@ -107,7 +249,9 @@ One frame per context step t_k (`frames/t_XXX.png`), stitched into
   `--levels`, every window's level as background, aggressive levels hatched.
 
 It runs the same code as `compute_responsibility`, and `--run` takes that
-run's settings, so the numbers equal the run's `windows.csv`.
+run's settings, so the numbers equal the run's `windows.csv`. Without `--run`,
+live mode takes `--motion-set`, `--n-samples` and `--use-ooi` itself; with
+`--run`, `--use-ooi` is refused unless the run used it.
 
 ### Records: inspect and visualise a run offline
 
@@ -116,7 +260,8 @@ run's settings, so the numbers equal the run's `windows.csv`.
 saves its `record.pkl`. A record holds the scene itself, plus, for every
 context step t_k:
 
-- the agent's motion set (samples [N, 80, 2] and their goal log-probabilities);
+- the agent's motion set (samples [N, 80, 2] and their goal log-probabilities,
+  or for a weighted set the log of each trajectory's weight);
 - its goal distribution;
 - each vehicle neighbour's goal distributions with and without the agent;
 - all values, per neighbour included.
@@ -296,10 +441,14 @@ the result as data.
 - **Where it goes.** The files are `OUT/<rule>/<scene>.pkl`, named like
   `raw_scenes_500`, so `Scene.load`, `compute_responsibility.py`,
   `visualize_responsibility.py --scene` and MetaDrive read them as they are.
-- **What is recorded.** `metadata.adversary` and `OUT/<rule>/index.json`
-  hold the rule, the chosen candidate, its predicted collision score, the
-  adversary's β and the first step at which the plan overlaps the logged
-  ego.
+- **What is recorded.** `metadata.adversary` and `OUT/<rule>.index.json`
+  (next to the folder, which holds only scenes) hold the rule, the chosen
+  candidate, its predicted collision score, the adversary's β, the first
+  step at which the plan overlaps the logged ego and the smallest gap to
+  it. MetaDrive asserts that every file in a scene folder is a `.pkl`
+  file, so an index that an older export left inside the folder is moved
+  out when the export resumes into it, and `verify_adv_export` reads either
+  place.
 
 With `--rule cat` (500 scenes, `adv_scenes/cat`, about 1 s a scene on the
 GPU), the plan overlaps the logged ego in 476 scenes (95%). The first overlap
@@ -342,6 +491,97 @@ In these scenes the ego is the logged one and does not react to an
 adversary that was not there. Its own β_s toward the adversary is therefore
 often positive as well: in scene 0 it reaches 1.2 m at 3.5 s, because some
 of its alternatives would have kept more distance.
+
+### Swapping the ego and the adversary
+
+CAT takes the ego from `metadata.sdc_id` and the adversary from the other
+object of interest. MetaDrive spawns its ego vehicle, its route and the
+replay policy from the same track, and steers only replayed traffic as an
+adversary. So the roles are swapped in the scene data, not in advgen.
+`swap_roles` writes a copy of the scenes in which the other object of
+interest is the self-driving car (`sdc_id`, `sdc_track_index`) and the
+logged self-driving car is the adversary (`responsibility/swap.py`):
+
+```bash
+python -m scripts.responsibility.swap_roles --scenes raw_scenes_500 --out-dir raw_scenes_500_swapped
+python cat_advgen.py --scenes_dir raw_scenes_500_swapped                        # CAT's benchmark, roles swapped
+python cat_RLtrain.py --mode cat --scenes_dir raw_scenes_500_swapped --seed 0  # run name cat_swapped_...
+python -m scripts.responsibility.export_adv_scenes --scenes raw_scenes_500_swapped --out-dir adv_scenes_swapped
+python -m scripts.responsibility.compute_responsibility --scenes raw_scenes_500_swapped --use-ooi \
+    --out-dir logs/responsibility/swapped/sdc
+```
+
+- **Eligibility.** A scene is swapped only if the other object of interest
+  is a vehicle valid at every step, because MetaDrive spawns the ego at
+  step 0 and drives its whole logged route. 459 of the 500 scenes qualify.
+  In 24 the other object is missing at step 0, and in 17 its track has
+  gaps.
+- **Layout.** The swapped scenes keep their file names. The folder holds
+  only scenes, because MetaDrive asserts that every file in it is one; the
+  index of swapped and skipped scenes is
+  `raw_scenes_500_swapped.index.json`, next to it.
+- **Train/test split.** `cat_RLtrain.py --scenes_dir` counts CAT's split
+  over the files present: scenes 0–399 train, 400 on test. That is 369 / 90
+  for the swapped folder. The evaluation runs once over the test scenes.
+- **Run names.** A swapped folder adds `_swapped` to the run name.
+- **Other scripts.** `cat_advgen.py --scenes_dir` runs over every scene in
+  the folder. The other scripts read any scene folder with `--scenes`.
+
+**Checked in MetaDrive** on this branch. On swapped scenes 0–2, the ego
+follows the new self-driving car's log exactly (0.00 m at step 20), and the
+original one is replayed traffic. In CAT's two-round generation on scenes
+0–5, every adversary is the original self-driving car. The attack hits
+4 of 6 swapped scenes and 6 of 6 original ones, too few scenes to compare
+rates. A 300-step `cat_RLtrain.py` run on the swapped folder ran as
+`cat_swapped_MDWaymo-seed99`.
+
+### Near misses instead of collisions
+
+`--adv_selection near` keeps CAT's generation, the same 32 DenseTNT
+candidates for the adversary, but chooses a near miss instead of a
+collision. For each candidate, gap_j is the smallest gap between the
+adversary's and the ego's footprints over the 8 s CAT plans. Each footprint
+is three circles, checked every 0.1 s, and gap_j is averaged over the ego
+trajectories by P(AV_i). The rule then works as follows:
+
+1. Drop every candidate that touches the ego, meaning CAT's own test
+   predicts a collision, or the gap to any ego trajectory is ≤ 0.
+2. Of the rest, take the most probable candidate whose gap is within
+   `--near_gap ± --near_tol` (m). Defaults: 1.0 ± 0.5.
+3. If no candidate is in that band, take the one closest to `--near_gap`.
+4. If every candidate collides, take the one with the largest gap.
+
+The circles are slightly larger than the car (0.28 m at the side of a
+4.8 × 2 m car), so gap_j understates the true gap a little.
+
+```bash
+python cat_advgen.py --adv_selection near --near_gap 1.0 --near_tol 0.5
+python cat_RLtrain.py --mode cat --adv_selection near --near_gap 1.0 --seed 0     # run name cat_near1_0.5_...
+python -m scripts.responsibility.export_adv_scenes --rule near --near_gap 1.0 --out-dir adv_scenes
+```
+
+**Measured on the first 30 scenes.** The adversary is planned against the
+logged ego, as in `export_adv_scenes`. Its closest approach is then
+measured against the logged ego, and the scenes are replayed in MetaDrive
+(logged ego, generated adversary):
+
+| rule | overlap | closest approach P10 / median / P90 | within target ± 0.5 m | ego collisions in MetaDrive | adversary β_s (median) |
+|---|---|---|---|---|---|
+| cat | 100% | −2.64 / −1.42 / −0.73 m | – | 23 / 30 | 3.40 m |
+| near 0.5 m | 0% | 0.18 / 0.61 / 1.45 m | 70% | 0 / 30 | 0.86 m |
+| near 1.0 m | 0% | 0.57 / 1.20 / 1.62 m | 77% | 0 / 30 | 0.34 m |
+| near 2.0 m | 0% | 0.83 / 1.84 / 2.27 m | 73% | 0 / 30 | −0.01 m |
+
+- **Outside the target band.** In 23–30% of the scenes no candidate falls
+  within the band. The closest one is taken, which accounts for the tails
+  of the gap distribution.
+- **Responsibility.** The farther the miss, the less responsible the
+  adversary: its safety responsibility goes from 3.40 m for CAT's
+  collisions to about 0 at 2 m.
+- **In training.** The ego is the policy, not the log, and it reacts. The
+  realised gap is that of the policy's own trajectory, against which the
+  candidates were not scored: CAT scores them against the ego's past
+  rollouts.
 
 ## Driving policies (rollouts)
 
@@ -486,6 +726,96 @@ same-direction collisions (rear-end, cut-in, side-swipe). Oncoming and
 crossing ones need right-of-way rules from the lane graph, so they get
 `n/a`, and `compare_policies` reports RSS's coverage.
 
+The **right of way** (`responsibility/right_of_way.py`, columns
+`right_of_way`, `right_of_way_case`, `priority`) is the traffic-law
+baseline for those: collisions between different paths (crossing, turning
+across, merging, changing lanes). WOMD was recorded in US cities, so the
+rules are the California Vehicle Code's. Everything is read from the
+`Scene` (trajectories, lane graph, traffic-light states, stop signs), so
+logged scenes and rollouts are judged alike, without MetaDrive.
+
+1. **Conflict.** The two paths, each extended 15 m along its last heading,
+   cross (or merge) at P*. Each agent's conflict zone is the stretch of its
+   path where its footprint overlaps the other's swept strip.
+2. **Priority.** Each agent is followed through the lane graph to P*. Its
+   control is the light of the intersection lane it entered, in the state
+   it showed at the stop line (WOMD lights and stop signs control the lane
+   that starts at the stop line), or a stop sign. The first rule that
+   applies names the holder: red-light (21453), lane-change (21658),
+   driveway (21804), protected-arrow, left-turn (21801), first-in at a green
+   light or by arrival at an all-way stop, stop-sign (21802), through-road at
+   a T junction (21800(c)). With no rule the case says why: signal-unknown,
+   uncontrolled, oncoming, same-direction, following.
+3. **Duties**, as Signal Temporal Logic over the steps both are seen
+   (`responsibility/stl.py`, robustness in metres):
+   - `yield(y, p) = G(enters(y) → cleared(p) ∨ can_stop(p))`: the yielder
+     enters the zone only when the holder has passed it or can still stop
+     before it, after a 1 s response and braking at 4 m/s² (RSS's ρ and
+     brake_min);
+   - `avoid(x, z) = G(in(z) ∧ can_stop(x) ∧ ¬in(x) → ¬in(x) W ¬in(z))`:
+     nobody drives into a zone the other occupies while it can still stop,
+     right of way or not.
+
+   A violated duty puts the collision on that agent (both: shared).
+
+The STL is a small numpy module rather than `md-stl-monitor`: that package
+evaluates per-agent rules on a world built from ScenarioNet dictionaries,
+while these duties are pairwise and need the conflict zone, which lives
+here.
+
+Checked on CAT's 500 logged scenes: for the self-driving car and the other
+object of interest at their closest approach, logged drivers mostly keep
+the right of way, so the holder should usually pass P* first. Of 220 pairs
+whose paths cross or merge and where one passed at least 0.5 s before the
+other, 118 get a holder, and it passed first in 87%:
+
+| rule | pairs | holder passed first |
+|---|---|---|
+| stop-sign | 49 | 94% |
+| through-road | 19 | 68% |
+| all-way-stop/first-in | 16 | 100% |
+| driveway | 10 | 100% |
+| red-light | 8 | 88% |
+| left-turn | 7 | 100% |
+
+Most disagreements are a yielder that went first lawfully while the holder
+was still far away. The other 102 pairs get no holder: signal-unknown 38
+(no state for that light), uncontrolled 23, all-way-stop/order-unknown 17
+(both waiting when the clip began), same-direction 15, oncoming 9. The
+CVC's order for uncontrolled intersections (first-in, then yield to the
+right, 21800(a)/(b)) is off by default (`uncontrolled_order`): the map shows
+no control there, but in reality such junctions mostly have signs or lights
+WOMD lacks, and the holder it names passed first in only 40% (15 pairs) and
+25% (8 pairs). On the logged pairs the yield duty fails for 3% of the
+yielders, the duties' false-alarm rate on lawful driving.
+
+These 500 scenes were the development set: the driveway, through-road,
+oncoming and all-way-stop rules were added after looking at their
+disagreements. The held-out check runs over the rest of WOMD's
+validation_interactive split (converted by `convert_womd_split`, below), with the two
+objects of interest as the pair. It also evaluates the CVC's uncontrolled
+order on the pairs left "uncontrolled", in the same pass:
+
+```bash
+python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/cat_format/validation_interactive/scenes \
+    --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 \
+    --out-dir logs/responsibility/right_of_way/validation_interactive
+```
+
+It writes `pairs.csv` (one row per scene; a re-run resumes) and
+`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval). On
+CAT's scenes (`--scenes raw_scenes_500 --pair sdc`) it reproduces the
+numbers above (103 of 118, 95% CI 80–92%) in 48 s on 8 processes.
+
+`compute_responsibility --rollouts` writes these columns with every
+collision. To add them to the crash files of a finished run, which a re-run
+skips, recompute the rule-based verdicts (RSS and right of way) in place.
+This needs only the scenes and rollouts, not the model:
+
+```bash
+python -m scripts.responsibility.attribute_rules --runs logs/responsibility/policies/*/*
+```
+
 ```bash
 python -m scripts.responsibility.fit_levels --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
     --fit-runs P/replay/none --out-dir P/levels            # P=logs/responsibility/policies
@@ -499,8 +829,10 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 
 - from the rollouts: crash rate, route completion, arrival and out-of-road rates;
 - the ego-fault and other-fault shares of the attributed collisions, and
-  their agreement with the rear-end rule and with RSS where both decide
-  (coverage, and RSS's own ego-fault share, in `comparison.csv`);
+  their agreement with the rear-end rule, with RSS and with the right of
+  way where both decide (coverage, each baseline's own ego-fault share and
+  `baseline_coverage`, the share RSS or the right of way decides, in
+  `comparison.csv`);
 - the share of windows the ego was stopped (below `--min-speed`, not judged);
 - the aggressive and timid shares of the judged windows, and each relative
   to the reference ("× ref");
@@ -550,18 +882,18 @@ measured against what the others actually do. Policies must therefore be
 compared under the same test adversary, which is what `comparison_seeds.md`'s
 matrices do.
 
-#### Trained policies (preliminary, 2026-10-07: 16 of 17 models)
+#### Trained policies (all 17 models, 2026-10-08)
 
 These are the results of `run_eval.sh` with `MODELS=models_eval`, on the 100
 test scenes with every model under four test adversaries
 (`logs/responsibility/eval/compare`). Each value is a mean ± std over seeds:
-three seeds each, except two for `cat_share` and one for the ablations.
+three seeds each, except one for the two ablations.
 
 | training | crash, CAT adversary | of which ego / other fault | route completion, no adversary | route completion, CAT adversary | arrival, no adversary |
 |---|---|---|---|---|---|
 | TD3 replay | 42.0 ± 7.5% | 17.3 / 19.0% | 70.3 ± 4.7% | 63.5 ± 7.6% | 48.0% |
 | cat | 42.3 ± 5.0% | 15.0 / 22.0% | 66.5 ± 1.6% | 57.2 ± 3.3% | 46.3% |
-| cat_share (2 seeds) | 40.0 ± 1.4% | 19.5 / 15.5% | 69.7 ± 7.6% | 61.3 ± 4.1% | 49.0% |
+| cat_share | 39.3 ± 1.5% | 19.7 / 13.7% | 72.3 ± 7.0% | 64.7 ± 6.6% | 50.3% |
 | cat_rss | 35.7 ± 2.5% | 13.3 / 21.0% | 68.2 ± 3.5% | 61.6 ± 4.8% | 48.3% |
 | cat_fair2_0.1 | 34.0 ± 4.4% | 16.8 / 12.8% | **76.5 ± 1.6%** | **71.9 ± 1.4%** | **56.3%** |
 | cat_fairinf_0.5 (1 seed) | 35.0% | 15.0 / 16.0% | 77.2% | 69.6% | 55.0% |
@@ -580,8 +912,9 @@ verdict; shared verdicts make up the rest.
   the crash rates are 42.3 vs 42.0% (p = 0.95), and route completion is
   lower (57.2 vs 63.5%).
 - **The weighted collision penalties show no significant effect.**
-  `cat_share` is −2.3 pp on crashes (p = 0.51) and `cat_rss` −6.7 pp
-  (p = 0.13). The collision penalty they weight is small: −1 a step, about 4
+  Against `cat`, `cat_share` is −3.0 pp on crashes (p = 0.41) and +7.5 pp
+  on route completion against CAT's adversary (p = 0.18), and `cat_rss` is
+  −6.7 pp on crashes (p = 0.13). The collision penalty they weight is small: −1 a step, about 4
   for a collision, against −10 and the end of the episode for leaving the
   road.
 - **Behaviour profiles do not tell the settings apart.** Every TD3 policy has
@@ -592,6 +925,84 @@ verdict; shared verdicts make up the rest.
 - **Single-seed ablations.** `cat_fairinf_0.5` matches the fair adversary,
   which suggests avoidability matters more than β. `cat_fair2_0.1_share`
   looks like an outlier (59% crashes). Both need more seeds.
+
+#### Reproducing CAT's Table 2 (2026-10-09)
+
+CAT (Sec. 4.3) trains TD3 on the same split as here: scenes 0-399 of these
+500 WOMD scenes for training, 400-499 for testing. Training runs for about
+1M steps: Fig. 5 ends near 9 x 10^5 interactions and the code defaults to
+`max_timesteps=1e6`; Table 3's "10E6" looks like a typo. The table below
+uses CAT's own `eval_policy`, which `cat_RLtrain.py` logs every 25k steps
+(`logs/<run>_MDWaymo-seed<s>-0/logger.csv`). Each value is the final
+evaluation, averaged over 3 seeds:
+
+| | crash, log replay | crash, CAT adversary | route completion, CAT adversary |
+|---|---|---|---|
+| paper: replay | 19.9% | 43.3% | 63.5% |
+| here: replay | 21.3% | 41.7% | 63.2% |
+| paper: CAT | 13.4% | **28.2%** | 67.6% |
+| here: cat | 15.7% | **39.7%** | 56.8% |
+
+- **The replay baseline and the log-replay drop reproduce.** The replay
+  numbers match the paper within 3 pp, and CAT training lowers the
+  log-replay crash rate by 5.6 pp (paper: 6.5 pp).
+- **The gain against CAT's adversary does not.** The paper's crash rate
+  falls by 15 pp; here it falls by 2 pp. The cat runs' curves stay near
+  0.40 for the whole run, and their best checkpoints reach 0.32-0.36.
+
+The training path is CAT's code, apart from two changes:
+
+- **What is identical:** `--adv_selection cat` returns CAT's own
+  `AdvGenerator`. The hyperparameters are CAT's defaults (M = 32,
+  N = 5, alpha = 0.99, min_prob 0.1), and so are the training loop and
+  `eval_policy`.
+- **What changed:**
+  - `StepAlignedPlan`. It only matters for adversaries that appear after
+    the first step: 16 of the 400 training scenes and 8 of the 100 test
+    scenes, 1-10 steps late.
+  - Clearing a leftover adversary plan when an episode starts.
+  - `--no_store_map`, which affects memory only.
+- **The environment:** MetaDrive is CAT's package, unmodified. The
+  dependency versions differ (torch 2.4.1 instead of 1.12), and DenseTNT's
+  candidates match CAT's to 3.6e-12 m.
+
+The adversary does act in training. In the second half, adversarial
+episodes end in a crash or off the road in 0.68 of cases, normal ones in
+0.50.
+
+**A pristine run of CAT's code rules out the two changes.** CAT's code was
+checked out unmodified (commit 9de53da, `/home/Cesar/catspond-upstream`,
+with the same scenes, MetaDrive and DenseTNT weights). It trained with
+README's command `python cat_RLtrain.py --mode cat --seed 0` (1M steps,
+11.5 h). Its own evaluations against CAT's adversary:
+
+| crash, CAT adversary | final | last 3 | per 200k steps |
+|---|---|---|---|
+| upstream cat, seed 0 | 0.35 | 0.33 | 0.48, 0.43, 0.43, 0.36, 0.32 |
+| here: cat, seeds 0 / 1 / 2 | 0.44 / 0.38 / 0.37 | 0.40 / 0.37 / 0.40 | roughly flat; seed 1 falls to 0.37 |
+| here: replay, seeds 0 / 1 / 2 | 0.33 / 0.45 / 0.47 | 0.34 / 0.45 / 0.46 | flat |
+
+The upstream curve falls as the paper's Fig. 5 does, but it ends where
+replay seed 0 also ends. A cross evaluation separates the code from the
+models: each final model went through both versions' `eval_policy` on the
+100 test scenes.
+
+| crash, CAT adversary | CAT's code | this repository's code |
+|---|---|---|
+| upstream model | 0.38 | 0.37 |
+| cat_s0 | 0.42 | 0.45 |
+
+Swapping the code changes a model's result by 1-3 pp, in no consistent
+direction. The same model and code also vary by about 3 pp between
+evaluations: the upstream model logged 0.35 during training and 0.38 when
+evaluated again. So the changes here do not weaken or strengthen CAT's
+adversary.
+
+The differences between runs come from the seeds. The paper's ± (1.1-2.0
+pp) is far below the spread seen here between seeds (replay 0.34-0.46).
+The paper does not state how many seeds it used. Over 3 seeds of the public
+code, CAT training lowers the log-replay crash rate as reported, but not
+the crash rate against CAT's adversary (39.7 vs 41.7% for replay).
 
 ### Training with a responsibility-weighted collision penalty
 
@@ -642,8 +1053,9 @@ attribution, and the mean weight over spans of training.
 `--blame_weighting rss` is the rule-based baseline (`cat_rss`, …). It
 removes the whole penalty when RSS puts the collision on the other car
 alone, and keeps all of it otherwise. It needs no DenseTNT. Every
-collision's RSS verdict is logged in both modes, and `summarize_blame`
-reports RSS's verdicts and its agreement with the counterfactual one.
+collision's RSS and right-of-way verdicts are logged in both modes, and
+`summarize_blame` reports each one's verdicts and its agreement with the
+counterfactual one.
 
 The weighting is tested against a stand-in for the training env
 (`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of
@@ -757,7 +1169,13 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   neighbour's input).
 - **Neighbours by interaction evidence** (footprint gap ≤ 10 m, post-encroachment
   time ≤ 2 s, constant-velocity TTC ≤ 4 s over the metric horizon, within
-  50 m), as in catk, not a plain radius.
+  50 m), as in catk, not a plain radius. For a simplified evaluation,
+  `--use-ooi` (in `compute_responsibility` and in live visualisation)
+  measures the agent against the scenario's other objects of interest only,
+  in every window and whatever the evidence. Every one of CAT's 500 scenes
+  has two objects of interest, the self-driving car and the adversary, so
+  each scene is measured for that one pair. `--agent` must then be `sdc` or
+  `adv`. The interaction scores are still written per neighbour.
 - **Courtesy toward vehicles only.** CAT's DenseTNT predicts vehicles
   (`agent_type='vehicle'`); safety is measured toward every neighbour.
 - **D_g saturates at 10 m** and CVaR uses the upper-tail convention with
@@ -800,12 +1218,178 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
     with neighbours), with both distributions renormalised there. There is no
     restriction where less than half of b's goal mass lies on those lanes,
     because then the map misses where b is going.
+
+    **Without lane topology, drop `--courtesy-valid-goals`** rather than
+    approximate it (for b's own drive mode, see `--courtesy-same-mode`
+    below). The restriction needs
+    the exit chain of the lane graph. Two map-free stand-ins were measured
+    against it with DenseTNT on the first 30 scenes: every SDC window and
+    vehicle neighbour, 937 pairs, 730 of them with the HD support defined.
+    The stand-ins were (A) b's goals within D m of b's logged path, and (B)
+    b's goals within a forward cone of its heading. Both moved β_c further
+    from the HD values than no restriction does:
+
+    | β_c support | MAE | MAE on the top 10% | Spearman |
+    |---|---|---|---|
+    | none | 0.0039 nats | 0.018 nats | 0.996 |
+    | A, logged path ±8 m | 0.017 nats | 0.122 nats | 0.983 |
+    | A, logged path ±20 m | 0.0075 nats | 0.047 nats | 0.992 |
+    | B, forward cone 90° | 0.0067 nats | 0.030 nats | 0.982 |
+    | B, forward cone 120° | 0.0058 nats | 0.026 nats | 0.987 |
+
+    The HD support leaves out little: a median of 1.7% of b's goal mass, and
+    16.5% at the 90th percentile. A support around b's logged path does more
+    harm. It cuts away the goals of another intent, and those are exactly
+    where a's presence moves b's mass, so it hides the change that β_c
+    measures.
+  - **β_c within b's own drive mode (`--courtesy-same-mode`).**
+    `--courtesy-valid-goals` keeps every goal b can reach, so a change of
+    mode (straight → turn) still counts. `--courtesy-same-mode` keeps only
+    the goals of the mode b drove in the log, so β_c measures how a changes
+    b's plan within that mode. It has two versions:
+    - `lanes`: goals within 2 m of b's lane route, as `--lane-route` builds
+      it for the queried agent.
+    - `path`: goals within `--courtesy-path-lateral` (6 m) of b's logged
+      path, extended 100 m along its last heading. No map is needed.
+
+    There is no restriction where b's mode holds less than 0.1% of its goal
+    mass, since there is nothing to renormalise. The mass inside the
+    mode is written per neighbour as `courtesy_goal_mass`.
+
+    **Calibration of `path` against `lanes`**, on the 761 pairs above with b
+    on an HD lane route. DenseTNT puts a median 97.6% of b's mass on b's
+    own route (10th percentile 72.6%). The two are close in the median
+    (0.015 vs 0.016 nats unrestricted), but on the 10% of pairs with the
+    largest β_c the restriction changes β_c by 0.126 nats: these are the
+    pairs where a moves b's mass between modes.
+
+    | β_c support, against `lanes` | MAE | MAE on the top 10% | Spearman |
+    |---|---|---|---|
+    | none | 0.0165 nats | 0.126 nats | 0.986 |
+    | reachable (`--courtesy-valid-goals`) | 0.0121 nats | 0.101 nats | 0.992 |
+    | `path`, 3 m | 0.0170 nats | 0.099 nats | 0.950 |
+    | `path`, 6 m (default) | 0.0102 nats | 0.055 nats | 0.965 |
+    | `path`, 8 m | 0.0099 nats | 0.056 nats | 0.969 |
+
+    Inside 6 m, `path` keeps 86% of the mass on b's route and 47% of the
+    mass off it, which is goals on parallel lanes and just past the lanes'
+    reach. Beyond 6 m it stops improving.
   - **A path-based alternative to the lane route.** `--route-tolerance` keeps
     the trajectories that stay within that many metres of the logged path,
     which is extended 100 m along the last heading.
+  - **Same intent without lane topology (`--intent`, `responsibility/intent.py`).**
+    A map built by perception has lane lines and road edges but almost no
+    topology in intersections, so the lane route has nothing to work with
+    there. `--intent` judges the manoeuvre from the trajectories:
+    1. *Heading:* at the last logged step T* (at most 8 s ahead), the
+       alternative heads within 45° (`--intent-heading`) of the logged path's
+       direction **where the alternative is**, not of the log at the same
+       time. A braking alternative still in the middle of the logged turn
+       is kept; with the same-time comparison it was not. At 45° the
+       same-time comparison drops 4.7% of the mass that ends on a route
+       lane, and this comparison drops 2.6%. An agent whose logged path is shorter
+       than 5 m shows no intent and is not restricted.
+    2. *Lateral:* it stays within 8 m (`--intent-lateral`) of the logged path.
+       This drops a turn that has only begun by T*, which still heads within
+       45° of the path.
+    3. *Road edges (`--intent-edges`, off by default):* every second, the
+       segment from the alternative to the nearest point of the logged path
+       crosses no `ROAD_EDGE_BOUNDARY` or `ROAD_EDGE_MEDIAN`. A missing edge
+       removes nothing, so an incomplete map only loosens the test.
+
+    **Calibration against the lane route on the first 30 scenes.** The
+    reference is β_s over the weighted motion sets of
+    `logs/filter_trial/weighted_filtered`, restricted by the HD lane route
+    (end points within 2 m of a route lane), on 930 SDC–neighbour pairs. The
+    sets are taken offline from the records, with no other filter.
+
+    | restriction | MAE β_s | MAE on the 105 pairs > 0.05 m | largest error |
+    |---|---|---|---|
+    | none | 0.0041 m | 0.0094 m | 0.62 m |
+    | heading 45° | 0.0026 m | 0.0102 m | 0.30 m |
+    | heading 45° + lateral 8 m (default) | 0.0027 m | 0.0126 m | 0.26 m |
+    | + road edges (HD) | 0.0030 m | 0.0158 m | 0.26 m |
+    | + road edges, 30% dropped, 0.3 m noise | 0.0030 m | 0.0154 m | 0.26 m |
+    | + road edges, 60% dropped, 0.5 m noise | 0.0028 m | 0.0137 m | 0.26 m |
+
+    The heading test drops all the mass that ends on a non-route lane more
+    than 15 m from the logged path. What it keeps of the non-route mass lies
+    within 15 m and heads the same way: two lanes over, beyond the lane
+    route's one-hop neighbours, or a turn that has only begun (scene 15,
+    steps 20–35, which the lateral test drops). Road edges move β_s
+    **away** from the lane route, and degrading them moves it back, because
+    edges at intersection corners and islands cut off alternatives the lane
+    route keeps. That is why they are off by default. At a 2 s horizon the
+    choice matters little in any case: even no restriction is within 0.01 m
+    of the lane route on the pairs that matter.
+  - **Drivable area without centrelines (`--drivable-edges`,
+    `responsibility/edges.py`).** The drivable test above needs lane
+    centrelines, and a perceived map has none inside intersections. Here the
+    path is checked every 0.5 s from the agent's position, and the
+    trajectory must cross no `ROAD_EDGE_BOUNDARY` or `ROAD_EDGE_MEDIAN`. An
+    edge that the agent's own logged path crosses does not count (map noise,
+    or a driveway, which WOMD v1.1 lacks), and a gap in the edges removes
+    nothing.
+
+    **Measured on the first 30 scenes.** The reference is the centreline
+    test (3 m) on the HD map, over the weighted sets of
+    `logs/filter_trial/weighted_filtered` (345 windows, 930 SDC–neighbour
+    pairs, no other filter). A perception-like map is made from the HD one:
+    lane topology removed, and the centrelines of the 32% of lanes that cross
+    another lane at more than 30° (intersection connectors) removed. The
+    road edges are then cut into 10 m pieces, a share of them dropped, and
+    the rest jittered.
+
+    | drivable test | wrongly dropped | wrongly kept | MAE β_s | MAE, pairs > 0.05 m | largest error |
+    |---|---|---|---|---|---|
+    | centrelines, perceived map | 15.7% | 16.7% | 0.033 m | 0.087 m | 4.71 m |
+    | road edges (as in the HD map) | 1.3% | 36% | 0.0042 m | 0.026 m | 0.72 m |
+    | road edges, 30% dropped, 0.3 m noise | 1.2% | 51% | 0.0059 m | 0.035 m | 0.79 m |
+    | road edges, 60% dropped, 0.5 m noise | 1.3% | 66% | 0.0080 m | 0.037 m | 1.19 m |
+
+    "Wrongly dropped" is the share of the mass the reference keeps that the
+    test removes. "Wrongly kept" is the share of the mass the reference
+    removes that the test keeps. On a perceived map the centreline test
+    removes the alternatives that cross an intersection. The edge test
+    almost never removes too much, even with gaps and noise. It keeps road
+    surface that is more than 3 m from a lane centre (parking lanes,
+    shoulders), and whatever leaves through a gap. Combining the two did not
+    help. Keeping points within 3 m of a centreline, or farther than C from
+    every centreline, and also checking the edges, wrongly dropped 19–22%
+    of the mass for C = 4.5, 6 and 8 m: points just past the end of a
+    removed intersection lane fall between 3 m and C.
 
   `--motion-set weighted` uses DenseTNT's whole goal grid (0.999 of the mass),
-  probability-weighted, instead of 40 samples.
+  probability-weighted, instead of 40 samples. That set holds a median of 944
+  trajectories per window (P10 402, P90 2742, max 15568 over the 345 windows
+  with neighbours of `logs/filter_trial/weighted_filtered`), each completed
+  and filtered. `--motion-set topk` keeps the `--n-samples` most probable
+  goals instead, probability-weighted and renormalised over them. The top 40
+  hold a median 0.69 of the mass (P10 0.39). Offline, from the weighted run's
+  records, with the same filters re-applied to the top k, against the full
+  weighted β_s on 961 neighbour pairs:
+
+  | motion set | MAE β_s, all pairs | MAE on the 110 pairs with β_s > 0.05 m | largest error |
+  |---|---|---|---|
+  | top 40 | 0.014 m | 0.060 m | 1.00 m |
+  | top 100 | 0.008 m | 0.036 m | 0.91 m |
+  | top 200 | 0.004 m | 0.021 m | 0.65 m |
+  | 40 samples (`logs/filter_trial/filtered`) | 0.010 m | 0.035 m | 0.89 m |
+  | 40 by NMS (`--motion-set nms`, run) | 0.005 m | 0.015 m | 0.53 m |
+
+  The top 40 are deterministic but less accurate than 40 samples where β_s
+  matters: truncation drops the low-probability, slower executions that
+  `weighted` was added for. `--motion-set nms` (`modes.py`) instead spreads
+  its `--n-samples` goals over the distribution with CAT's goal NMS (7.2 m
+  times CAT's speed scale factor, 0.5–1.0), fills up with the next most
+  probable goals when fewer survive, and weights each goal by the probability
+  of the grid goals nearest to it, so the weights sum to 1. It was run with
+  DenseTNT on the same 30 scenes and filters (on CPU, 10–19 s per scene). It
+  is the most accurate of the 40-trajectory sets, more accurate than the top
+  200: correlation 0.996 with the weighted β_s (40 samples: 0.981), the
+  β_s > 0.05 m flag agrees on 99.9% of the pairs, and the mean difference is
+  −0.001 m. MTR's adapter applies the same rule to its 64 intention
+  endpoints.
 
   **Results on the first 30 scenes.** The runs cover 390 SDC windows with
   DenseTNT (`logs/filter_trial`) and are compared with the unfiltered run of

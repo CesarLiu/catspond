@@ -12,7 +12,10 @@ xi_a / xi_b the logged futures, and the motion set N trajectories the motion
 model samples for a at k (DenseTNT: from its goal distribution) -- or, with
 ``motion_set="weighted"`` and a model with a finite motion set (UniTraj's MTR:
 64 intentions), all of them weighted by their probabilities, which makes the
-CVaR exact. beta_s > 0: most of what a
+CVaR exact; with ``motion_set="topk"``, the N most probable of them, weighted
+by their probabilities renormalised over the N; with ``motion_set="nms"``, N
+of them spread over the distribution by CAT's goal NMS, each weighted by the
+probability of the goals nearest to it (responsibility/modes.py). beta_s > 0: most of what a
 could have done would have kept more distance to b than what it actually
 did, so a gave up safety margin (drove more aggressively than its
 alternatives); beta_s <= 0: a kept at least as much distance as usual.
@@ -31,6 +34,11 @@ vehicle neighbours; safety toward every neighbour.
 Both are open-loop: DenseTNT conditions on the 1.1 s of history up to k and
 never on anyone's future.
 
+The neighbours b are the agents interaction evidence selects
+(responsibility.interaction), or with ``use_ooi`` the scenario's other
+objects of interest, in every window, so that a scene is measured for one
+pair (a itself must be an object of interest).
+
 With ``filter`` (responsibility.motion_filter), beta_s(a, b) is taken over
 the valid part of a's motion set only: same route, on the road,
 kinematically feasible, through no third agent. The per-neighbour entries
@@ -41,7 +49,12 @@ With ``courtesy_valid_goals``, the KL of beta_c(a, b) is taken over b's
 valid goals only -- those on the lanes b can reach from where it is
 (responsibility.lanes.reachable_lanes) -- both distributions renormalised
 there; "courtesy_goal_mass" holds the mass of b's distribution (with a)
-on them.
+on them. With ``courtesy_same_mode``, the KL is taken over the goals of b's
+own logged drive mode instead (same_mode_support): "lanes", those on b's
+lane route (responsibility.lanes.route_lanes, as --lane-route for a);
+"path", those within ``courtesy_path_lateral`` (m) of b's logged path, with
+no map needed. beta_c then measures how a changes b's plan within the mode
+b drove, not a change of mode.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -51,14 +64,17 @@ import numpy as np
 import torch
 
 from responsibility.geometry import pairwise_min_distance_over_time
-from responsibility.interaction import InteractionConfig, interacting_neighbours
-from responsibility.lanes import reachable_lanes
+from responsibility.interaction import InteractionConfig, interacting_neighbours, ooi_neighbours
+from responsibility.intent import distance_to_logged_path
+from responsibility.lanes import lane_graph, reachable_lanes, route_lanes
 from responsibility.motion_filter import MotionFilter, MotionFilterConfig, goals_on_lanes, restrict_to_route
 from responsibility.risk import cvar
 from responsibility.scene import Scene
 
 FIRST_STEP = 10  # DenseTNT needs 10 steps of history before the current one
+MOTION_SETS = ("sampled", "weighted", "topk", "nms")  # ResponsibilityConfig.motion_set
 MIN_VALID_GOAL_MASS = 0.5  # below this share on b's reachable lanes, courtesy is not restricted to them
+MIN_MODE_MASS = 1e-3  # below this share in b's own drive mode there is nothing to renormalise: not restricted
 
 
 @dataclass
@@ -71,9 +87,14 @@ class ResponsibilityConfig:
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     courtesy: bool = True
     seed: int = 0
-    motion_set: str = "sampled"  # or "weighted": the model's whole motion set, probability-weighted
+    # "weighted": the whole motion set; "topk": its n_safety_samples most probable; "nms": n_safety_samples
+    # spread by goal NMS (modes.py)
+    motion_set: str = "sampled"
     filter: MotionFilterConfig = field(default_factory=MotionFilterConfig)  # valid counterfactuals for beta_s
     courtesy_valid_goals: bool = False  # beta_c over the goals on lanes b can reach
+    courtesy_same_mode: Optional[str] = None  # beta_c over b's own drive mode: "lanes" (HD) or "path" (map-free)
+    courtesy_path_lateral: float = 6.0  # m from b's logged path, for courtesy_same_mode="path"
+    use_ooi: bool = False  # neighbours: the other objects of interest, always (one pair per scene)
 
 
 @dataclass
@@ -154,11 +175,23 @@ def safety_responsibility(samples: np.ndarray, actual: np.ndarray, actual_valid:
 def motion_set(model, dist, cfg: ResponsibilityConfig, generator: Optional[torch.Generator] = None):
     """The agent's motion set: (trajectories [N, T, 2], their log
     probabilities [N], weights [N] or None) -- N samples, or with
-    cfg.motion_set == "weighted" the model's whole, probability-weighted set."""
-    if cfg.motion_set == "weighted":
+    cfg.motion_set == "weighted" the model's whole, probability-weighted set,
+    or with "topk" its N most probable members, probability-weighted (the
+    weights are not renormalised here; weighted_cvar does that), or with
+    "nms" N members spread by CAT's goal NMS, each weighted by the
+    probability nearest to it (responsibility/modes.py)."""
+    if cfg.motion_set == "nms":
+        if not hasattr(model, "nms_motion_set"):
+            raise ValueError("motion_set='nms' needs a model with an NMS motion set (DenseTNT or UniTraj's MTR)")
+        trajs, weights = model.nms_motion_set(dist, cfg.n_safety_samples)
+        weights = np.asarray(weights, dtype=np.float64)
+        return trajs, torch.as_tensor(np.log(np.clip(weights, 1e-300, None))), weights
+    if cfg.motion_set in ("weighted", "topk"):
         if not hasattr(model, "motion_set"):
-            raise ValueError("motion_set='weighted' needs a model with a finite motion set (e.g. UniTraj's MTR)")
-        trajs, probs = model.motion_set(dist)
+            raise ValueError(f"motion_set='{cfg.motion_set}' needs a model with a finite motion set "
+                             "(e.g. UniTraj's MTR)")
+        trajs, probs = (model.motion_set(dist, top_k=cfg.n_safety_samples) if cfg.motion_set == "topk"
+                        else model.motion_set(dist))
         probs = np.asarray(probs, dtype=np.float64)
         return trajs, torch.as_tensor(np.log(np.clip(probs, 1e-300, None))), probs
     _, log_prob, trajs = model.sample(dist, cfg.n_safety_samples, generator=generator)
@@ -189,6 +222,35 @@ def valid_goal_support(scene: Scene, b: int, step: int, dist, radius: float) -> 
     return on if float(dist.log_prob.exp()[on].sum()) >= MIN_VALID_GOAL_MASS else None
 
 
+def goals_in_scene(dist) -> Optional[np.ndarray]:
+    """A goal distribution's goals [G, 2] in the scene frame (DenseTNT's
+    grid; MTR's intention end points), or None."""
+    goals = getattr(dist, "goals_global", None)
+    if goals is None and hasattr(dist, "goals") and hasattr(dist, "to_global"):
+        goals = dist.to_global(dist.goals)
+    return None if goals is None else np.asarray(goals)
+
+
+def same_mode_support(scene: Scene, b: int, step: int, dist, cfg: ResponsibilityConfig) -> Optional[torch.Tensor]:
+    """b's goals in its own logged drive mode (bool [G]), or None (no
+    restriction) for a model without goals, b on no lane ("lanes"), or less
+    than MIN_MODE_MASS of b's goal mass in that mode."""
+    goals = goals_in_scene(dist)
+    if goals is None:
+        return None
+    if cfg.courtesy_same_mode == "lanes":
+        lanes = route_lanes(scene, b, step)
+        if lanes is None:
+            return None
+        on = lane_graph(scene).near(goals, lanes, cfg.filter.lane_radius)
+    elif cfg.courtesy_same_mode == "path":
+        on = distance_to_logged_path(scene, b, step, goals) <= cfg.courtesy_path_lateral
+    else:
+        raise ValueError(f"courtesy_same_mode must be 'lanes' or 'path', not {cfg.courtesy_same_mode!r}")
+    on = torch.as_tensor(on, device=dist.log_prob.device)
+    return on if float(dist.log_prob.exp()[on].sum()) >= MIN_MODE_MASS else None
+
+
 def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: ResponsibilityConfig,
                       generator: Optional[torch.Generator] = None,
                       record: Optional[Dict] = None) -> Optional[Observation]:
@@ -204,21 +266,24 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
     visualisation): "distribution" (the agent's goal distribution),
     "samples" [N, 80, 2] and "sample_log_prob" [N] (None without neighbours),
     "horizon", "neighbours" {index: evidence}, "courtesy" {neighbour
-    index: (distribution with, without the agent)} and, with a filter,
-    "kept" {neighbour index: indices of the samples beta_s used}."""
+    index: (distribution with, without the agent)}, "courtesy_support"
+    {neighbour index: the goals the KL was taken over (bool [G]) or None}
+    and, with a filter, "kept" {neighbour index: indices of the samples
+    beta_s used}."""
     horizon = effective_horizon(scene, step, cfg)
     if horizon == 0:
         return None
     dist = model.distribution(scene, step, agent)
     if dist is None:
         return None
-    neighbours = interacting_neighbours(scene, agent, step, horizon, cfg.interaction)
+    select = ooi_neighbours if cfg.use_ooi else interacting_neighbours
+    neighbours = select(scene, agent, step, horizon, cfg.interaction)
     fut = slice(step + 1, step + 1 + horizon)
     speed = float(np.linalg.norm(scene.velocity[agent, step]))
     per_neighbour: Dict[str, Dict[str, float]] = {}
     if record is not None:
         record.update(distribution=dist, samples=None, sample_log_prob=None, horizon=horizon,
-                      neighbours=neighbours, courtesy={}, kept={})
+                      neighbours=neighbours, courtesy={}, courtesy_support={}, kept={})
     if neighbours:
         route_mass = None
         if cfg.filter.lane_route:  # a goal-based model: restrict its goals to a's route lanes before sampling
@@ -248,13 +313,18 @@ def responsibility_at(model, scene: Scene, agent: int, step: int, cfg: Responsib
             if cfg.courtesy:
                 pair = model.with_and_without(scene, step, b, agent)
                 if pair is not None:
-                    support = (valid_goal_support(scene, b, step, pair[0], cfg.filter.lane_radius)
-                               if cfg.courtesy_valid_goals else None)
+                    if cfg.courtesy_same_mode:
+                        support = same_mode_support(scene, b, step, pair[0], cfg)
+                    elif cfg.courtesy_valid_goals:
+                        support = valid_goal_support(scene, b, step, pair[0], cfg.filter.lane_radius)
+                    else:
+                        support = None
                     entry["courtesy"] = goal_kl(pair[0].log_prob, pair[1].log_prob, support)
                     if support is not None:
                         entry["courtesy_goal_mass"] = round(float(pair[0].log_prob.exp()[support].sum()), 4)
                     if record is not None:
                         record["courtesy"][b] = pair
+                        record["courtesy_support"][b] = support
             per_neighbour[scene.track_ids[b]] = entry
     safety = max((v["safety"] for v in per_neighbour.values()), default=0.0)
     courtesy = max((v["courtesy"] for v in per_neighbour.values() if v["courtesy"] is not None), default=0.0)

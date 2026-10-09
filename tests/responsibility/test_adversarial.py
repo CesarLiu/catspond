@@ -7,6 +7,7 @@ from responsibility.adversarial import (  # noqa: E402
     adversary_responsibility,
     cat_candidate_probs,
     cat_collision_scores,
+    closest_approach,
     select,
 )
 from responsibility.metrics import ResponsibilityConfig  # noqa: E402
@@ -160,3 +161,38 @@ def test_the_plan_is_applied_at_the_scene_step():
     assert len(plan) == 91 and plan
     env.current_seed = 8
     assert len(plan) == 0 and not plan
+
+
+def test_closest_approach_is_the_smallest_gap_between_the_footprints():
+    ego = _line(0.0)
+    side = np.sqrt(0.8 ** 2 + 1.0 ** 2)  # radius of each of the 3 circles covering a 4.8 x 2 m car
+    start = (np.zeros(2), 0.0)
+
+    def approach(y0, vy=0.0, trajs_av=(ego,), probs_av=(1.0,)):  # a candidate starting at (0, y0)
+        adv_start = (np.array([0.0, y0]), float(np.arctan2(vy, 10.0)))
+        return closest_approach(_line(y0, vy)[None], list(trajs_av), list(probs_av), adv_start, start, SIZE, SIZE)
+
+    assert approach(3.0)[0][0] == pytest.approx(3.0 - 2 * side, abs=1e-6)  # beside
+    assert approach(6.0)[0][0] == pytest.approx(6.0 - 2 * side, abs=1e-6)  # further
+    gap, gap_min = approach(-8.0, vy=2.0)  # crossing the ego's lane
+    assert gap[0] < 0 and gap_min[0] == gap[0]
+    # two ego trajectories from the same start: the P(AV_i)-weighted mean gap, and the smaller one
+    drift = _line(0.0, vy=0.2)  # 1.6 m toward the candidate by 8 s
+    alone = [approach(3.0, trajs_av=(t,))[0][0] for t in (ego, drift)]
+    gap2, gap_min2 = approach(3.0, trajs_av=(ego, drift), probs_av=(0.75, 0.25))
+    assert alone[1] < alone[0]
+    assert gap2[0] == pytest.approx(0.75 * alone[0] + 0.25 * alone[1])
+    assert gap_min2[0] == pytest.approx(alone[1])
+
+def test_near_rule_takes_the_most_likely_near_miss_and_never_a_collision():
+    gap = np.array([-0.5, 0.4, 1.1, 0.9, 3.0])
+    gap_min = gap.copy()
+    score = np.array([0.3, 0.0, 0.0, 0.0, 0.0])
+    prob = np.array([0.5, 0.2, 0.05, 0.15, 0.1])
+    near = dict(gap=gap, gap_min=gap_min, prob=prob, target_gap=1.0, gap_tol=0.5)
+    assert select("near", score, np.zeros(5), None, **near) == (3, "most likely near miss")  # 0.9 m, likelier than 1.1
+    assert select("near", score, np.zeros(5), None, **dict(near, gap_tol=0.05))[0] == 3  # closest to 1.0
+    collide = dict(near, gap_min=np.full(5, -1.0))
+    assert select("near", score, np.zeros(5), None, **collide) == (4, "largest gap (every candidate collides)")
+    with pytest.raises(ValueError):
+        select("near", score, np.zeros(5), None)

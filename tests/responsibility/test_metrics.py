@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
@@ -118,3 +120,56 @@ def test_scene_responsibility_covers_the_windows():
     obs = scene_responsibility(model, scene, cfg=cfg)
     assert [o.step for o in obs] == [10, 30, 50, 70]
     assert all(o.per_neighbour["1"]["courtesy"] is None for o in obs)
+
+
+def test_use_ooi_measures_the_objects_of_interest_only_in_every_window():
+    tracks = {
+        "0": track((0.0, 0.0), (10.0, 0.0)),  # the self-driving car
+        "1": track((0.0, 60.0), (0.0, 0.0)),  # the other object of interest, never interacting
+        "2": track((0.0, 4.0), (10.0, 0.0)),  # alongside, but not of interest
+    }
+    scene = make_scene(tracks, sdc="0", ooi=("0", "1"))
+    t = np.arange(1, 81) * 0.1
+    model = FakeModel(lambda n: np.repeat(np.stack([10 * t, np.zeros(80)], -1)[None], n, 0))
+    plain = scene_responsibility(model, scene, 0, ResponsibilityConfig(courtesy=False))
+    assert {tid for obs in plain for tid in obs.per_neighbour} == {"2"}
+    ooi = scene_responsibility(model, scene, 0, ResponsibilityConfig(courtesy=False, use_ooi=True))
+    assert ooi and all(set(obs.per_neighbour) == {"1"} for obs in ooi)
+    assert ooi[0].per_neighbour["1"]["min_gap"] > InteractionConfig().gap_threshold  # kept without evidence
+    with pytest.raises(ValueError, match="not an object of interest"):
+        scene_responsibility(model, scene, 2, ResponsibilityConfig(courtesy=False, use_ooi=True))
+
+
+class ModeModel(FakeModel):
+    """b (agent 1) drives straight along the lane; its goals: two straight ahead
+    on the lane, two 25 m to the left. With a, b's mass moves to the left
+    goals; within each mode it does not change."""
+
+    GOALS = np.array([[70.0, 0.0], [80.0, 0.0], [70.0, 25.0], [80.0, 25.0]])
+
+    def __init__(self, with_a=(0.2, 0.2, 0.3, 0.3), without_a=(0.4, 0.4, 0.1, 0.1)):
+        t = np.arange(1, 81) * 0.1
+        super().__init__(lambda n: np.repeat(np.stack([10 * t, np.zeros(80)], -1)[None], n, 0))
+        self.p, self.q = with_a, without_a
+
+    def with_and_without(self, scene, step, b, a):
+        def dist(probs):
+            return SimpleNamespace(log_prob=torch.log(torch.tensor(probs, dtype=torch.float64)),
+                                   goals_global=self.GOALS)
+        return dist(self.p), dist(self.q)
+
+
+def test_courtesy_within_b_s_own_drive_mode():
+    scene = make_scene({"0": track((0.0, 0.0), (10.0, 0.0)), "1": track((20.0, 0.0), (10.0, 0.0))})
+    base = dict(courtesy=True, use_ooi=True)
+    whole = responsibility_at(ModeModel(), scene, 0, 10, ResponsibilityConfig(**base)).per_neighbour["1"]
+    assert whole["courtesy"] > 0.1  # the mass moved between modes
+    for mode in ("lanes", "path"):
+        same = responsibility_at(ModeModel(), scene, 0, 10,
+                                 ResponsibilityConfig(courtesy_same_mode=mode, **base)).per_neighbour["1"]
+        assert same["courtesy"] == pytest.approx(0.0, abs=1e-9)  # within the straight mode nothing changed
+        assert same["courtesy_goal_mass"] == pytest.approx(0.4)
+    # b's own mode all but unpredicted: nothing to renormalise, no restriction
+    rare = ModeModel(with_a=(1e-5, 1e-5, 0.5, 0.49998), without_a=(0.4, 0.4, 0.1, 0.1))
+    entry = responsibility_at(rare, scene, 0, 10, ResponsibilityConfig(courtesy_same_mode="path", **base)).per_neighbour["1"]
+    assert "courtesy_goal_mass" not in entry and entry["courtesy"] > 0.1

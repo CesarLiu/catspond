@@ -17,12 +17,18 @@ Each frame shows
 
 Two ways to run it:
 
-  live      --scene N: computes the frames with DenseTNT, or --model mtr (the same code as
+  live      --scene N [N ...]: computes the frames with DenseTNT, or --model mtr (the same code as
             compute_responsibility.py; --run takes a run's settings so the
-            values equal its windows.csv) and saves them as record.pkl
-  offline   --record path/to/<scene>.pkl: renders a record written by
+            values equal its windows.csv) and saves them as record.pkl. The
+            model is loaded once for all scenes, and --agent sdc adv renders
+            each scene for both objects of interest (with --use-ooi: the
+            same pair, roles swapped)
+  offline   --record path/to/<scene>.pkl [...]: renders records written by
             compute_responsibility.py --save-records (or by a live run) --
             no DenseTNT, TensorFlow or scene files needed
+
+One video goes to --out-dir; several go to --out-dir/<scene> (live, with
+several agents: --out-dir/<scene>_<agent>).
 
 Examples (from the repository root):
     python -m scripts.responsibility.visualize_responsibility --scene 17 \\
@@ -30,6 +36,8 @@ Examples (from the repository root):
         --out-dir logs/responsibility/video_17
     python -m scripts.responsibility.visualize_responsibility \\
         --record logs/responsibility/sdc/records/17.pkl --out-dir logs/responsibility/video_17
+    python -m scripts.responsibility.visualize_responsibility --scene 17 23 42 \\
+        --agent sdc adv --use-ooi --out-dir logs/responsibility/videos_ooi
 """
 
 import argparse
@@ -37,6 +45,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from typing import Dict, Iterator, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -49,7 +58,8 @@ from matplotlib.collections import LineCollection  # noqa: E402
 from matplotlib.patches import Patch, Polygon  # noqa: E402
 
 from responsibility.interaction import InteractionConfig  # noqa: E402
-from responsibility.metrics import ResponsibilityConfig  # noqa: E402
+from responsibility.metrics import MOTION_SETS, ResponsibilityConfig  # noqa: E402
+from responsibility.motion_filter import MotionFilterConfig  # noqa: E402
 from responsibility.records import load_record, save_record, scene_of  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
@@ -69,8 +79,9 @@ MAP_STYLE = {  # type prefix -> (colour, width)
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--scene", help="Live: scene file index (e.g. 17) or path to a .pkl scene.")
-    src.add_argument("--record", help="Offline: a record from compute_responsibility.py --save-records.")
+    src.add_argument("--scene", nargs="+",
+                     help="Live: scene file indices (e.g. 17 23) or paths to .pkl scenes; the model is loaded once.")
+    src.add_argument("--record", nargs="+", help="Offline: records from compute_responsibility.py --save-records.")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--levels", default=None, help="levels.csv from fit_levels.py, for the timeline.")
     p.add_argument("--view-radius", type=float, default=None, help="m; default: fitted to the scene (30-90 m).")
@@ -78,11 +89,19 @@ def parse_args():
     p.add_argument("--fps", type=float, default=2.0)
     live = p.add_argument_group("live mode")
     live.add_argument("--scenes", default="raw_scenes_500")
-    live.add_argument("--agent", default="sdc", help="sdc, adv or a track id.")
+    live.add_argument("--agent", nargs="+", default=["sdc"],
+                      help="sdc, adv or a track id; several (e.g. sdc adv) render each scene for each, which with "
+                           "--use-ooi swaps the roles of the two objects of interest.")
     live.add_argument("--run", default=None, help="compute_responsibility.py output whose settings to use.")
     d = ResponsibilityConfig()
     live.add_argument("--stride", type=int, default=d.window_stride)
     live.add_argument("--n-samples", type=int, default=d.n_safety_samples)
+    live.add_argument("--use-ooi", action="store_true",
+                      help="Neighbours: the scenario's other objects of interest only (as compute_responsibility.py's).")
+    live.add_argument("--courtesy-same-mode", choices=["lanes", "path"], default=None,
+                      help="beta_c over the neighbour's own drive mode only (as compute_responsibility.py's).")
+    live.add_argument("--motion-set", default=d.motion_set, choices=MOTION_SETS,
+                      help="As compute_responsibility.py's; the video draws exactly the scored set.")
     live.add_argument("--horizon", type=int, default=d.metric_horizon)
     live.add_argument("--seed", type=int, default=d.seed)
     live.add_argument("--device", default=None, help="Default: cuda if available.")
@@ -100,37 +119,66 @@ def parse_args():
 def config_from(args) -> ResponsibilityConfig:
     if args.run is None:
         return ResponsibilityConfig(n_safety_samples=args.n_samples, metric_horizon=args.horizon,
-                                    window_stride=args.stride, seed=args.seed)
+                                    window_stride=args.stride, seed=args.seed, motion_set=args.motion_set,
+                                    use_ooi=args.use_ooi, courtesy_same_mode=args.courtesy_same_mode)
     saved = json.loads((Path(args.run) / "config.json").read_text())["responsibility"]
     saved["interaction"] = InteractionConfig(**saved["interaction"])
+    if "filter" in saved:
+        saved["filter"] = MotionFilterConfig(**saved["filter"])
+    if args.use_ooi and not saved.get("use_ooi", False):
+        raise SystemExit(f"{args.run} was computed without --use-ooi: drop --use-ooi or --run")
     return ResponsibilityConfig(**saved)
 
 
-def pick_agent(scene: Scene, which: str) -> int:
+def pick_agent(scene: Scene, which: str, use_ooi: bool = False) -> int:
     if which == "sdc":
-        return scene.sdc
-    if which == "adv":
-        return [i for i in scene.objects_of_interest if i != scene.sdc][0]
-    return scene.index(which)
+        agent = scene.sdc
+    elif which == "adv":
+        others = [i for i in scene.objects_of_interest if i != scene.sdc]
+        if not others:
+            raise ValueError("no second object of interest")
+        agent = others[0]
+    else:
+        agent = scene.index(which)
+    if use_ooi and agent not in scene.objects_of_interest:
+        raise ValueError(f"--use-ooi: agent {scene.track_ids[agent]} is not an object of interest")
+    return agent
 
 
-def live_record(args):
+def scene_paths(args) -> List[Path]:
+    files = {p.stem: p for p in scene_files(args.scenes)} if any(s.isdigit() for s in args.scene) else {}
+    return [files[s] if s.isdigit() else Path(s) for s in args.scene]
+
+
+def live_records(args) -> Iterator[Tuple[str, Dict]]:
+    """(name, record) for every scene and agent asked for, the model loaded
+    once; a scene without the agent is skipped."""
     import torch
 
     from responsibility.models import load_model
     from responsibility.records import run_scene
 
-    path = {p.stem: p for p in scene_files(args.scenes)}[args.scene] if args.scene.isdigit() else Path(args.scene)
-    scene = Scene.load(path)
-    agent = pick_agent(scene, args.agent)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     cfg = config_from(args)
-    observations, record = run_scene(load_model(args, device), scene, agent, cfg)
-    record["scene_file"] = path.stem
-    for obs in observations:
-        print(f"t={obs.step / 10:.1f}s: safety {obs.safety:+.3f} m, courtesy {obs.courtesy:.4f} nats, "
-              f"{len(obs.per_neighbour)} neighbour(s)", flush=True)
-    return record
+    model = None
+    for path in scene_paths(args):
+        scene = Scene.load(path)
+        for which in args.agent:
+            name = path.stem if len(args.agent) == 1 else f"{path.stem}_{which}"
+            try:
+                agent = pick_agent(scene, which, cfg.use_ooi)
+            except ValueError as e:
+                print(f"{name}: skipped ({e})", flush=True)
+                continue
+            if model is None:
+                model = load_model(args, device)
+            print(f"{name}: agent {scene.track_ids[agent]}", flush=True)
+            observations, record = run_scene(model, scene, agent, cfg)
+            record["scene_file"] = path.stem
+            for obs in observations:
+                print(f"  t={obs.step / 10:.1f}s: safety {obs.safety:+.3f} m, courtesy {obs.courtesy:.4f} nats, "
+                      f"{len(obs.per_neighbour)} neighbour(s)", flush=True)
+            yield name, record
 
 
 # ----------------------------------------------------------------------------
@@ -177,7 +225,7 @@ def fit_radius(scene, agent, frames, horizon):
     return float(np.clip(need, 30.0, 90.0))
 
 
-def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap):
+def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap, weighted=False):
     step, obs = frame["step"], frame["observation"]
     centre = scene.position[agent, step, :2]
     ax.set_xlim(centre[0] - radius, centre[0] + radius)
@@ -231,7 +279,9 @@ def draw_scene(ax, scene, agent, frame, map_groups, radius, horizon, ego_heatmap
     if len(logged) > 1:
         ax.plot(*logged.T, color="black", lw=1.6, ls="--", zorder=8)
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    ax.figure.colorbar(sm, ax=ax, fraction=0.035, pad=0.01).set_label("log p(goal) of sample", fontsize=7)
+    weighted = weighted and frame.get("metric_samples", True)  # display-only frames are always samples
+    ax.figure.colorbar(sm, ax=ax, fraction=0.035, pad=0.01).set_label(
+        "log weight of trajectory" if weighted else "log p(goal) of sample", fontsize=7)
     label = "motion set (2 s solid)" if frame.get("metric_samples", True) else "motion set (display only)"
     handles = [
         plt.Line2D([], [], color=cmap(0.8), lw=1.5, label=label),
@@ -268,8 +318,17 @@ def draw_courtesy(axes, scene, agent, frame, map_groups, radius, horizon):
         # each panel on its own scale: a spread-out distribution would vanish next to a peaked one
         p = goals["prob"]
         keep = p > p.max() * 1e-3
+        inside = goals.get("in_support", np.ones(len(p), dtype=bool))  # the goals the KL was taken over
+        out = keep & ~inside
+        if out.any():  # left out of the KL (another drive mode, or unreachable): grey
+            ax.scatter(*goals["points"][out].T, c=np.log10(p[out]), cmap="Greys", vmin=np.log10(p.max()) - 4,
+                       vmax=np.log10(p.max()) + 1, s=5, linewidths=0, zorder=2)
+        keep &= inside
         pts = goals["points"][keep]
         ax.scatter(pts[:, 0], pts[:, 1], c=np.log10(p[keep]), cmap="Blues", s=5, linewidths=0, zorder=2)
+        if "support_mass" in goals:
+            ax.text(0.02, 0.02, f"in the KL: {goals['support_mass']:.0%} of the mass", transform=ax.transAxes,
+                    fontsize=6.5, va="bottom", bbox=dict(facecolor="white", alpha=0.8, lw=0))
         length, width = scene.shape_at(b, step)
         ax.add_patch(Polygon(box(centre, scene.heading[b, step], length, width), closed=True,
                              facecolor=NEIGHBOUR_COLOR, edgecolor="black", lw=0.5, zorder=4))
@@ -286,7 +345,9 @@ def draw_courtesy(axes, scene, agent, frame, map_groups, radius, horizon):
         ax.set_aspect("equal")
         ax.set_facecolor("#fbfbfb")
         ax.set_title(title, fontsize=8)
-    axes[0].text(1.0, 1.13, f"courtesy: goals of vehicle {c_id} (blue), KL = {value:.3f} nats",
+    restricted = "in_support" in pair["with"]
+    axes[0].text(1.0, 1.13, f"courtesy: goals of vehicle {c_id} (blue"
+                 + (", grey: left out of the KL" if restricted else "") + f"), KL = {value:.3f} nats",
                  transform=axes[0].transAxes, ha="center", fontsize=8.5)
 
 
@@ -334,13 +395,13 @@ def draw_timeline(ax, frames, n, levels):
     ax.grid(alpha=0.3)
 
 
-def render(scene, agent, frame, n, frames, map_groups, radius, horizon, levels, ego_heatmap):
+def render(scene, agent, frame, n, frames, map_groups, radius, horizon, levels, ego_heatmap, weighted=False):
     fig = plt.figure(figsize=(12, 8.2), dpi=100)
     grid = fig.add_gridspec(2, 3, width_ratios=[2.2, 1, 1], height_ratios=[3, 1.2], hspace=0.28, wspace=0.08)
     ax_scene = fig.add_subplot(grid[0, 0])
     ax_with, ax_without = fig.add_subplot(grid[0, 1]), fig.add_subplot(grid[0, 2])
     ax_time = fig.add_subplot(grid[1, :])
-    draw_scene(ax_scene, scene, agent, frame, map_groups, radius, horizon, ego_heatmap)
+    draw_scene(ax_scene, scene, agent, frame, map_groups, radius, horizon, ego_heatmap, weighted)
     draw_courtesy((ax_with, ax_without), scene, agent, frame, map_groups, radius, horizon)
     draw_timeline(ax_time, frames, n, levels)
     obs = frame["observation"]
@@ -369,13 +430,14 @@ def render_record(record, out_dir: Path, levels_csv=None, view_radius=None, ego_
     if not frames:
         raise ValueError("the record has no frames")
     horizon = record["config"]["metric_horizon"]
+    weighted = record["config"].get("motion_set", "sampled") != "sampled"  # colours are weights, not goal log p
     radius = view_radius or fit_radius(scene, agent, frames, horizon)
     levels = load_levels(levels_csv, record.get("scene_file", ""), record["agent_id"])
     groups = map_segments(scene)
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     images = []
     for n, frame in enumerate(frames):
-        image = render(scene, agent, frame, n, frames, groups, radius, horizon, levels, ego_heatmap)
+        image = render(scene, agent, frame, n, frames, groups, radius, horizon, levels, ego_heatmap, weighted)
         plt.imsave(out_dir / "frames" / f"t_{frame['step']:03d}.png", image)
         images.append(image)
     return write_video(images, out_dir, fps), radius
@@ -404,17 +466,22 @@ def write_video(images, out_dir: Path, fps: float):
 
 def main():
     args = parse_args()
-    out = Path(args.out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    root = Path(args.out_dir)
     if args.record:
-        record = load_record(args.record)
+        jobs = ((Path(r).stem, load_record(r)) for r in args.record)
+        several = len(args.record) > 1
     else:
-        record = live_record(args)
-        save_record(record, out / "record.pkl")
-    (gif, mp4), radius = render_record(record, out, args.levels, args.view_radius, args.ego_heatmap, args.fps)
-    print(f"wrote {len(record['frames'])} frames to {out / 'frames'} (view half-width {radius:.0f} m), {gif}"
-          + (f", {mp4}" if mp4 else " (no OpenCV: GIF only)")
-          + ("" if args.record else f"; record: {out / 'record.pkl'}"))
+        jobs = live_records(args)
+        several = len(args.scene) * len(args.agent) > 1
+    for name, record in jobs:  # one video in OUT, or several in OUT/<scene>[_<agent>]
+        out = root / name if several else root
+        out.mkdir(parents=True, exist_ok=True)
+        if not args.record:
+            save_record(record, out / "record.pkl")
+        (gif, mp4), radius = render_record(record, out, args.levels, args.view_radius, args.ego_heatmap, args.fps)
+        print(f"wrote {len(record['frames'])} frames to {out / 'frames'} (view half-width {radius:.0f} m), {gif}"
+              + (f", {mp4}" if mp4 else " (no OpenCV: GIF only)")
+              + ("" if args.record else f"; record: {out / 'record.pkl'}"), flush=True)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ a lane (a parking lot, or a driveway, which CAT's WOMD v1.1 maps lack).
 """
 
 from collections import deque
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -147,17 +147,18 @@ class LaneGraph:
         return (d <= radius).numpy()
 
 
-_GRAPHS: Dict[int, LaneGraph] = {}
+_GRAPHS: Dict[int, Tuple[Dict, LaneGraph]] = {}
 
 
 def lane_graph(scene: Scene) -> LaneGraph:
-    """The scene's lane graph, built once per map."""
+    """The scene's lane graph, built once per map. The cache holds the map
+    itself, so its id cannot be reused by another scene's map while cached."""
     key = id(scene.map_features)
-    if key not in _GRAPHS:
+    if key not in _GRAPHS or _GRAPHS[key][0] is not scene.map_features:
         if len(_GRAPHS) > 8:
             _GRAPHS.clear()
-        _GRAPHS[key] = LaneGraph(scene.map_features)
-    return _GRAPHS[key]
+        _GRAPHS[key] = (scene.map_features, LaneGraph(scene.map_features))
+    return _GRAPHS[key][1]
 
 
 def route_lanes(scene: Scene, agent: int, step: int, beyond: float = 100.0) -> Optional[Set[str]]:

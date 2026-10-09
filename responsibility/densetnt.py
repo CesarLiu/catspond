@@ -38,7 +38,9 @@ import tensorflow as tf  # noqa: E402
 
 import advgen.adv_utils  # noqa: E402
 import advgen.utils  # noqa: E402
+import advgen.utils_cython  # noqa: E402
 from advgen.modeling.vectornet import VectorNet  # noqa: E402
+from responsibility.modes import nms_select  # noqa: E402
 from responsibility.scene import Scene, cat_agent_order, womd_features  # noqa: E402
 
 # advgen/adv_generator.py's configuration of the pretrained model
@@ -246,18 +248,30 @@ class DenseTNT:
         trajs = self.complete(dist, dist.goals[idx.numpy()])
         return idx, dist.log_prob.cpu()[idx], trajs
 
-    def motion_set(self, dist: GoalDistribution, top_mass: float = 0.999):
+    def motion_set(self, dist: GoalDistribution, top_mass: float = 0.999, top_k: Optional[int] = None):
         """The whole goal distribution as a weighted motion set: every goal
         of the dense grid among the most probable ones covering ``top_mass``,
         completed (trajectories [G, 80, 2], scene frame), with its
         probability [G] (``--motion-set weighted``). Goals closer along the
         route stand for slower, braking executions, which 40 samples of a
-        peaked distribution rarely draw."""
+        peaked distribution rarely draw. With ``top_k``, the ``top_k`` most
+        probable goals instead (``--motion-set topk``): G is a median 944 on
+        the first 30 scenes, so this completes far fewer trajectories."""
         p = dist.log_prob.double().exp().cpu().numpy()
         order = np.argsort(-p, kind="stable")
-        n = int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1
+        n = top_k if top_k is not None else int(np.searchsorted(np.cumsum(p[order]), top_mass)) + 1
         keep = np.sort(order[:min(n, len(order))])
         return self.complete(dist, dist.goals[keep]), p[keep]
+
+    def nms_motion_set(self, dist: GoalDistribution, n: int):
+        """``n`` goals spread over the grid by CAT's NMS rule (its
+        nms_threshold times the speed scale factor of the agent's speed),
+        completed (trajectories [n, 80, 2], scene frame), each weighted by
+        the probability of the goals nearest to it (``--motion-set nms``,
+        responsibility/modes.py)."""
+        threshold = self.args.nms_threshold * advgen.utils_cython.speed_scale_factor(dist.mapping["speed"])
+        idx, weights = nms_select(dist.goals, dist.log_prob.double().exp().cpu().numpy(), n, threshold)
+        return self.complete(dist, dist.goals[idx]), weights
 
     def nms_modes(self, dist: GoalDistribution, mode_num: Optional[int] = None):
         """CAT's prediction: the top goals after non-maximum suppression,

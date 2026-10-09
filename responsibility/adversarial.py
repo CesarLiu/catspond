@@ -29,6 +29,20 @@ ego has to handle. Selection rules:
   fair         like constrained, but a candidate must also be avoidable:
                avoid_j >= rho (below); if no candidate qualifies, the most
                avoidable one among those within the threshold
+  near         a near miss instead of a collision: among the candidates
+               that touch no ego trajectory, the most probable one whose
+               closest approach gap_j lies within --near_gap +- --near_tol
+               (m); if none does, the one whose gap is closest to
+               --near_gap; if every candidate collides, the one with the
+               largest gap
+
+**Closest approach** gap_j of candidate j: the smallest gap between the
+footprints of the adversary driving j and the ego (each covered by three
+circles, every 0.1 s over the 8 s CAT plans), averaged over the ego
+trajectories by P(AV_i); negative is overlap. A candidate touches the ego
+if CAT's own test predicts a collision with any AV_i or its gap to any AV_i
+is <= 0. The circle cover is slightly larger than the box (0.28 m to the
+side of a 4.8 x 2 m car), so gap_j is a conservative near-miss distance.
 
 **Ego avoidability** of candidate j: the share of the ego's own DenseTNT
 motion set at the generation step -- what drivers with the ego's history
@@ -60,7 +74,7 @@ from responsibility.geometry import BoxTrajectories, collision_cost_matrix
 from responsibility.metrics import ResponsibilityConfig, safety_responsibility
 from responsibility.scene import Scene
 
-RULES = ("cat", "constrained", "penalized", "fair")
+RULES = ("cat", "constrained", "penalized", "fair", "near")
 GENERATION_STEP = 10  # CAT plans the adversary from the first 11 logged steps
 
 
@@ -137,6 +151,41 @@ def adversary_responsibility(samples: np.ndarray, candidates: np.ndarray, trajs_
     return beta
 
 
+def closest_approach(candidates: np.ndarray, trajs_av: Sequence[np.ndarray], probs_av: Sequence[float],
+                     adv_start: Tuple[np.ndarray, float], ego_start: Tuple[np.ndarray, float], adv_size: Dict,
+                     ego_size: Dict, horizon: int = 80, n_circles: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    """``gap`` [K]: each candidate's smallest footprint gap (m) to the ego,
+    averaged over the ego trajectories by P(AV_i), and ``gap_min`` [K]: the
+    smallest over them (<= 0: it touches one). Candidates [K, T, 2] and ego
+    trajectories [T', 2] start one step after the generation step;
+    ``*_start`` are (position, heading) there and the sizes CAT's {"w", "l"}
+    dicts. Footprints are covered by ``n_circles`` circles."""
+    from responsibility.geometry import circle_centers, circle_decomposition
+
+    f = torch.float64
+    w = np.asarray(probs_av, dtype=np.float64)
+    w = w / w.sum() if w.sum() > 0 else np.full(len(w), 1.0 / len(w))
+    cand = np.asarray(candidates, dtype=np.float64)[..., :2]
+    off_a, r_a = circle_decomposition(torch.tensor([float(adv_size["l"])], dtype=f),
+                                      torch.tensor([float(adv_size["w"])], dtype=f), n_circles)
+    off_e, r_e = circle_decomposition(torch.tensor([float(ego_size["l"])], dtype=f),
+                                      torch.tensor([float(ego_size["w"])], dtype=f), n_circles)
+    gaps = []
+    for traj_av in trajs_av:
+        ego = np.asarray(traj_av, dtype=np.float64)[:, :2]
+        h = min(horizon, len(ego), cand.shape[1])
+        c_adv = circle_centers(torch.as_tensor(cand[:, :h], dtype=f),
+                               torch.as_tensor(path_headings(cand[:, :h], adv_start[0], adv_start[1]), dtype=f),
+                               off_a.expand(len(cand), -1))  # [K, h, C, 2]
+        c_ego = circle_centers(torch.as_tensor(ego[None, :h], dtype=f),
+                               torch.as_tensor(path_headings(ego[None, :h], ego_start[0], ego_start[1]), dtype=f),
+                               off_e)  # [1, h, C, 2]
+        centre = torch.linalg.norm(c_adv[:, :, :, None, :] - c_ego[:, :, None, :, :], dim=-1)  # [K, h, C, C]
+        gaps.append((centre.amin(dim=(-3, -2, -1)) - (r_a[0] + r_e[0])).numpy())
+    gaps = np.stack(gaps)  # [I, K]
+    return (w[:, None] * gaps).sum(0), gaps.min(0)
+
+
 def path_headings(traj: np.ndarray, origin: np.ndarray, start_heading: float, min_step: float = 0.05) -> np.ndarray:
     """Headings [..., T] along trajectories [..., T, 2] that continue from
     ``origin`` (the position one step before their first point): the
@@ -188,8 +237,20 @@ def ego_avoidability(ego_samples: np.ndarray, candidates: np.ndarray, ego_start:
 
 def select(rule: str, score: np.ndarray, min_dist: np.ndarray, beta: Optional[np.ndarray],
            threshold: float = 1.0, penalty: float = 1.0, avoid: Optional[np.ndarray] = None,
-           min_avoid: float = 0.3) -> Tuple[int, str]:
+           min_avoid: float = 0.3, gap: Optional[np.ndarray] = None, gap_min: Optional[np.ndarray] = None,
+           prob: Optional[np.ndarray] = None, target_gap: float = 1.0, gap_tol: float = 0.5) -> Tuple[int, str]:
     """The chosen candidate and why."""
+    if rule == "near":
+        if gap is None or gap_min is None or prob is None:
+            raise ValueError("the near rule needs the candidates' closest approach and probabilities")
+        free = (score <= 0) & (gap_min > 0)
+        if not free.any():
+            return int(np.argmax(gap)), "largest gap (every candidate collides)"
+        idx = np.flatnonzero(free)
+        band = idx[np.abs(gap[idx] - target_gap) <= gap_tol]
+        if len(band):
+            return int(band[np.argmax(prob[band])]), "most likely near miss"
+        return int(idx[np.argmin(np.abs(gap[idx] - target_gap))]), "closest to the target gap"
     if rule == "cat" or beta is None:
         return (int(np.argmax(score)), "collision") if np.any(score) else (int(np.argmin(min_dist)), "closest")
     if rule == "constrained":
@@ -222,7 +283,7 @@ def select(rule: str, score: np.ndarray, min_dist: np.ndarray, beta: Optional[np
 
 def selection_name(args) -> str:
     """How runs with this adversary are named: cat, constrained<tau>,
-    penalized<p>, fair<tau>_<rho>."""
+    penalized<p>, fair<tau>_<rho>, near<gap>_<tol>."""
     rule = getattr(args, "adv_selection", "cat")
     if rule == "cat":
         return "cat"
@@ -230,6 +291,8 @@ def selection_name(args) -> str:
         return f"constrained{args.resp_threshold:g}"
     if rule == "penalized":
         return f"penalized{args.resp_penalty:g}"
+    if rule == "near":
+        return f"near{args.near_gap:g}_{args.near_tol:g}"
     return f"fair{args.resp_threshold:g}_{args.resp_avoid:g}"
 
 
@@ -238,12 +301,17 @@ def add_arguments(parser) -> None:
     g.add_argument("--adv_selection", default="cat", choices=RULES,
                    help="cat: CAT's original generator; constrained / penalized: limit the adversary's "
                         "safety responsibility toward the ego; fair: also require that the ego can "
-                        "avoid it (responsibility/adversarial.py).")
+                        "avoid it; near: a near miss at --near_gap instead of a collision "
+                        "(responsibility/adversarial.py).")
     g.add_argument("--resp_threshold", type=float, default=1.0,
                    help="m; constrained / fair: highest beta a chosen adversary trajectory may have.")
     g.add_argument("--resp_avoid", type=float, default=0.3,
                    help="fair: lowest share of the ego's motion set that must escape the adversary.")
     g.add_argument("--resp_penalty", type=float, default=1.0, help="m; penalized: exp(-beta / penalty).")
+    g.add_argument("--near_gap", type=float, default=1.0,
+                   help="m; near: the closest approach between the footprints to aim for, without contact.")
+    g.add_argument("--near_tol", type=float, default=0.5,
+                   help="m; near: gaps within near_gap +- near_tol count as hits; the most probable is taken.")
     g.add_argument("--resp_samples", type=int, default=40, help="Adversary motion-set size for beta.")
     g.add_argument("--resp_horizon", type=int, default=80, help="10 Hz steps over which beta is measured.")
     g.add_argument("--resp_d_sat", type=float, default=10.0, help="m; D_g saturation (<= 0: none).")
@@ -324,7 +392,8 @@ class ResponsibleAdvGenerator(_base()):
         self.adv_traj = StepAlignedPlan(np.concatenate(
             (adv_pos, get_polyline_vel(adv_pos), get_polyline_yaw(adv_pos).reshape(-1, 1)), axis=1), self.env)
         # scores only: candidates and samples of every episode would pile up over a training run
-        self.selections.append({k: choice[k] for k in ("rule", "chosen", "why", "score", "min_dist", "beta", "avoid")})
+        self.selections.append({k: choice[k] for k in ("rule", "chosen", "why", "score", "min_dist", "beta", "avoid",
+                                                       "gap")})
         return st["traffic_motion_feat"], self.adv_traj, np.array(trajs_av), bool(np.any(choice["score"]))
 
     def choose(self, scene: Scene, trajs_av, probs_av, ov_size, av_size, seed: int = 0,
@@ -342,14 +411,23 @@ class ResponsibleAdvGenerator(_base()):
         avoid, ego_samples = None, None
         if rule == "fair" or "fair" in (rules or ()):
             avoid, ego_samples = self.avoidability(scene, candidates, ov_size, av_size, seed)
+        gap = gap_min = None
+        if rule == "near" or "near" in (rules or ()):
+            adv, ego = cat_adversary(scene), scene.sdc
+            gap, gap_min = closest_approach(
+                candidates, trajs_av, probs_av,
+                (scene.position[adv, GENERATION_STEP, :2], float(scene.heading[adv, GENERATION_STEP])),
+                (scene.position[ego, GENERATION_STEP, :2], float(scene.heading[ego, GENERATION_STEP])),
+                ov_size, av_size, horizon=self.args.resp_horizon)
+        near = dict(gap=gap, gap_min=gap_min, prob=probs, target_gap=self.args.near_gap, gap_tol=self.args.near_tol)
         chosen, why = select(rule, score, min_dist, beta, self.args.resp_threshold, self.args.resp_penalty,
-                             avoid, self.args.resp_avoid)
+                             avoid, self.args.resp_avoid, **near)
         out = {"rule": rule, "chosen": chosen, "why": why, "trajectory": candidates[chosen],
-               "score": score, "min_dist": min_dist, "beta": beta, "avoid": avoid, "candidates": candidates,
-               "log_scores": log_scores, "samples": samples, "ego_samples": ego_samples}
+               "score": score, "min_dist": min_dist, "beta": beta, "avoid": avoid, "gap": gap, "gap_min": gap_min,
+               "candidates": candidates, "log_scores": log_scores, "samples": samples, "ego_samples": ego_samples}
         for other in rules or ():
             out[f"chosen_{other}"] = select(other, score, min_dist, beta, self.args.resp_threshold,
-                                            self.args.resp_penalty, avoid, self.args.resp_avoid)[0]
+                                            self.args.resp_penalty, avoid, self.args.resp_avoid, **near)[0]
         return out
 
     def avoidability(self, scene: Scene, candidates: np.ndarray, ov_size: Dict, av_size: Dict,
@@ -384,5 +462,8 @@ class ResponsibleAdvGenerator(_base()):
         avoid = [s["avoid"][s["chosen"]] for s in self.selections if s.get("avoid") is not None]
         if avoid:
             line += f", mean ego avoidability {np.mean(avoid):.2f}"
+        gap = [s["gap"][s["chosen"]] for s in self.selections if s.get("gap") is not None]
+        if gap:
+            line += f", closest approach median {np.median(gap):.2f} m"
         print(line)
 
