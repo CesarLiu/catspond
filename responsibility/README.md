@@ -968,8 +968,41 @@ The training path is CAT's code, apart from two changes:
 
 The adversary does act in training. In the second half, adversarial
 episodes end in a crash or off the road in 0.68 of cases, normal ones in
-0.50. A pristine checkout of CAT (commit 9de53da, seed 0) is being trained
-in `/home/Cesar/catspond-upstream`, to rule out the two changes.
+0.50.
+
+**A pristine run of CAT's code rules out the two changes.** CAT's code was
+checked out unmodified (commit 9de53da, `/home/Cesar/catspond-upstream`,
+with the same scenes, MetaDrive and DenseTNT weights). It trained with
+README's command `python cat_RLtrain.py --mode cat --seed 0` (1M steps,
+11.5 h). Its own evaluations against CAT's adversary:
+
+| crash, CAT adversary | final | last 3 | per 200k steps |
+|---|---|---|---|
+| upstream cat, seed 0 | 0.35 | 0.33 | 0.48, 0.43, 0.43, 0.36, 0.32 |
+| here: cat, seeds 0 / 1 / 2 | 0.44 / 0.38 / 0.37 | 0.40 / 0.37 / 0.40 | roughly flat; seed 1 falls to 0.37 |
+| here: replay, seeds 0 / 1 / 2 | 0.33 / 0.45 / 0.47 | 0.34 / 0.45 / 0.46 | flat |
+
+The upstream curve falls as the paper's Fig. 5 does, but it ends where
+replay seed 0 also ends. A cross evaluation separates the code from the
+models: each final model went through both versions' `eval_policy` on the
+100 test scenes.
+
+| crash, CAT adversary | CAT's code | this repository's code |
+|---|---|---|
+| upstream model | 0.38 | 0.37 |
+| cat_s0 | 0.42 | 0.45 |
+
+Swapping the code changes a model's result by 1-3 pp, in no consistent
+direction. The same model and code also vary by about 3 pp between
+evaluations: the upstream model logged 0.35 during training and 0.38 when
+evaluated again. So the changes here do not weaken or strengthen CAT's
+adversary.
+
+The differences between runs come from the seeds. The paper's ± (1.1-2.0
+pp) is far below the spread seen here between seeds (replay 0.34-0.46).
+The paper does not state how many seeds it used. Over 3 seeds of the public
+code, CAT training lowers the log-replay crash rate as reported, but not
+the crash rate against CAT's adversary (39.7 vs 41.7% for replay).
 
 ### Training with a responsibility-weighted collision penalty
 
