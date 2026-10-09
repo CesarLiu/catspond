@@ -30,8 +30,10 @@ full metric horizon before any other end. Every collision with another road
 user is also attributed (responsibility/blame.py: the ego's and the other's
 safety responsibility toward each other in the 2 s before it; "rule": the
 rear-end rule's verdict; "rss": Responsibility-Sensitive Safety's,
-responsibility/rss.py -- the baselines it is compared with) and written to
-OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
+responsibility/rss.py; "right_of_way": the traffic-law verdict for
+conflicts between different paths, with the rule that gave the priority and
+who held it, responsibility/right_of_way.py -- the baselines it is compared
+with) and written to OUT/crashes.csv (crashes.shard-<i>-of-<N>.csv).
 
 --valid-counterfactuals (or the separate --lane-route, --route-tolerance,
 --drivable-half-width, --kinematics, --collision-filter) restricts beta_s to
@@ -86,13 +88,15 @@ from responsibility.rollouts import (  # noqa: E402
     rollout_files,
     scene_from_rollout,
 )
+from responsibility.right_of_way import rollout_right_of_way  # noqa: E402
 from responsibility.rss import rollout_rss  # noqa: E402
 from responsibility.scene import Scene, scene_files  # noqa: E402
 
 ROW_FIELDS = ["scene", "scenario_id", "agent_id", "step", "time", "speed", "safety", "courtesy",
               "n_neighbours", "safety_against", "courtesy_toward"]
 CRASH_FIELDS = ["scene", "policy", "adv_mode", "crash_step", "window", "other_id", "other_type", "adversary",
-                "beta_ego", "beta_other", "share", "verdict", "rule", "rss", "rss_case"]
+                "beta_ego", "beta_other", "share", "verdict", "rule", "rss", "rss_case", "right_of_way",
+                "right_of_way_case", "priority"]
 
 
 def _m(value):
@@ -106,13 +110,14 @@ def blame_row(model, scene, agent, rollout, cfg):
     adversary = rollout["adversary"]["track_id"] if rollout["adversary"] is not None else ""
     row = {"scene": rollout["scene_file"], "policy": rollout["policy"], "adv_mode": rollout["adv_mode"],
            "crash_step": step, "adversary": adversary, "verdict": "unknown", "rule": "n/a", "rss": "n/a",
-           "rss_case": ""}
+           "rss_case": "", "right_of_way": "n/a", "right_of_way_case": "", "priority": "none"}
     blame = rollout_blame(model, scene, rollout, cfg) if agent == scene.sdc else None
     if blame is not None:
         row.update({k: v for k, v in blame.as_row().items() if k in CRASH_FIELDS})
-    rss = rollout_rss(scene, rollout) if agent == scene.sdc else None  # also where the model cannot attribute
-    if rss is not None:
-        row.update(rss.as_row())
+    if agent == scene.sdc:  # the rule-based verdicts, also where the model cannot attribute
+        for baseline in (rollout_rss(scene, rollout), rollout_right_of_way(scene, rollout)):
+            if baseline is not None:
+                row.update(baseline.as_row())
     row["adversary"] = int(bool(adversary) and row.get("other_id") == adversary)
     return row
 

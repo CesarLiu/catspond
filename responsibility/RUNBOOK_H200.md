@@ -496,6 +496,8 @@ ls $P/*/*/windows*.csv | wc -l
 ```bash
 P=logs/responsibility/policies
 runs=$(ls -d $P/replay/none $P/replay/cat $P/replay/fair* $P/td3_*/none $P/td3_*/cat $P/td3_*/fair*)
+# 给已有的 crashes*.csv 补上（或重算）规则定责：RSS 和路权。只要场景和 rollout，不用 GPU，每个碰撞不到 1 秒
+python -m scripts.responsibility.attribute_rules --runs $runs
 # 在回放的 logged 驾驶上拟合等级
 python -m scripts.responsibility.fit_levels --runs $runs --fit-runs $P/replay/none --out-dir $P/levels
 # 阈值取自第一个 run（回放的 logged 驾驶）
@@ -524,6 +526,7 @@ cat $P/compare/comparison.md
 - **β 的消融**：`td3_cat_fair2_0.1` 对 `td3_cat_fairinf_0.5`。如果两者一样，只约束可避免性就够了；如果前者更少胆怯，或者在 `none` 上开得更像人，β 就有它自己的作用。
 - **M2.3**：`td3_cat_share` 对 `td3_cat`。完成率提高、胆怯减少，自车责任碰撞不增加。
 - **RSS 基线**：`td3_cat_share` 对 `td3_cat_rss`。反事实的定责是否比 RSS 的规则定责更好。同时看 `RSS agree`：两种定责在真实碰撞上的一致率。
+- **路权基线**（`responsibility/right_of_way.py`，加州交规 CVC）：RSS 只管同向碰撞，交叉、转弯、汇入的碰撞由路权规则定责。看 `RoW agree`（与反事实定责的一致率），以及 `comparison.csv` 里的 `right_of_way_coverage` 和 `baseline_coverage`（RSS 或路权给出判定的碰撞占比；路权主要补上 RSS 判不了的交叉、转弯和汇入碰撞）。
 
 打包带回：
 

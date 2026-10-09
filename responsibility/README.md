@@ -676,6 +676,78 @@ same-direction collisions (rear-end, cut-in, side-swipe). Oncoming and
 crossing ones need right-of-way rules from the lane graph, so they get
 `n/a`, and `compare_policies` reports RSS's coverage.
 
+The **right of way** (`responsibility/right_of_way.py`, columns
+`right_of_way`, `right_of_way_case`, `priority`) is the traffic-law
+baseline for those: collisions between different paths (crossing, turning
+across, merging, changing lanes). WOMD was recorded in US cities, so the
+rules are the California Vehicle Code's. Everything is read from the
+`Scene` (trajectories, lane graph, traffic-light states, stop signs), so
+logged scenes and rollouts are judged alike, without MetaDrive.
+
+1. **Conflict.** The two paths, each extended 15 m along its last heading,
+   cross (or merge) at P*. Each agent's conflict zone is the stretch of its
+   path where its footprint overlaps the other's swept strip.
+2. **Priority.** Each agent is followed through the lane graph to P*. Its
+   control is the light of the intersection lane it entered, in the state
+   it showed at the stop line (WOMD lights and stop signs control the lane
+   that starts at the stop line), or a stop sign. The first rule that
+   applies names the holder: red-light (21453), lane-change (21658),
+   driveway (21804), protected-arrow, left-turn (21801), first-in at a green
+   light or by arrival at an all-way stop, stop-sign (21802), through-road at
+   a T junction (21800(c)). With no rule the case says why: signal-unknown,
+   uncontrolled, oncoming, same-direction, following.
+3. **Duties**, as Signal Temporal Logic over the steps both are seen
+   (`responsibility/stl.py`, robustness in metres):
+   - `yield(y, p) = G(enters(y) → cleared(p) ∨ can_stop(p))`: the yielder
+     enters the zone only when the holder has passed it or can still stop
+     before it, after a 1 s response and braking at 4 m/s² (RSS's ρ and
+     brake_min);
+   - `avoid(x, z) = G(in(z) ∧ can_stop(x) ∧ ¬in(x) → ¬in(x) W ¬in(z))`:
+     nobody drives into a zone the other occupies while it can still stop,
+     right of way or not.
+
+   A violated duty puts the collision on that agent (both: shared).
+
+The STL is a small numpy module rather than `md-stl-monitor`: that package
+evaluates per-agent rules on a world built from ScenarioNet dictionaries,
+while these duties are pairwise and need the conflict zone, which lives
+here.
+
+Checked on CAT's 500 logged scenes: for the self-driving car and the other
+object of interest at their closest approach, logged drivers mostly keep
+the right of way, so the holder should usually pass P* first. Of 220 pairs
+whose paths cross or merge and where one passed at least 0.5 s before the
+other, 118 get a holder, and it passed first in 87%:
+
+| rule | pairs | holder passed first |
+|---|---|---|
+| stop-sign | 49 | 94% |
+| through-road | 19 | 68% |
+| all-way-stop/first-in | 16 | 100% |
+| driveway | 10 | 100% |
+| red-light | 8 | 88% |
+| left-turn | 7 | 100% |
+
+Most disagreements are a yielder that went first lawfully while the holder
+was still far away. The other 102 pairs get no holder: signal-unknown 38
+(no state for that light), uncontrolled 23, all-way-stop/order-unknown 17
+(both waiting when the clip began), same-direction 15, oncoming 9. The
+CVC's order for uncontrolled intersections (first-in, then yield to the
+right, 21800(a)/(b)) is off by default (`uncontrolled_order`): the map shows
+no control there, but in reality such junctions mostly have signs or lights
+WOMD lacks, and the holder it names passed first in only 40% (15 pairs) and
+25% (8 pairs). On the logged pairs the yield duty fails for 3% of the
+yielders, the duties' false-alarm rate on lawful driving.
+
+`compute_responsibility --rollouts` writes these columns with every
+collision. To add them to the crash files of a finished run, which a re-run
+skips, recompute the rule-based verdicts (RSS and right of way) in place.
+This needs only the scenes and rollouts, not the model:
+
+```bash
+python -m scripts.responsibility.attribute_rules --runs logs/responsibility/policies/*/*
+```
+
 ```bash
 python -m scripts.responsibility.fit_levels --runs P/replay/none P/td3_cat_s0/none P/td3_cat_s0/cat \
     --fit-runs P/replay/none --out-dir P/levels            # P=logs/responsibility/policies
@@ -689,8 +761,10 @@ python -m scripts.responsibility.compare_policies --runs P/replay/none P/td3_cat
 
 - from the rollouts: crash rate, route completion, arrival and out-of-road rates;
 - the ego-fault and other-fault shares of the attributed collisions, and
-  their agreement with the rear-end rule and with RSS where both decide
-  (coverage, and RSS's own ego-fault share, in `comparison.csv`);
+  their agreement with the rear-end rule, with RSS and with the right of
+  way where both decide (coverage, each baseline's own ego-fault share and
+  `baseline_coverage`, the share RSS or the right of way decides, in
+  `comparison.csv`);
 - the share of windows the ego was stopped (below `--min-speed`, not judged);
 - the aggressive and timid shares of the judged windows, and each relative
   to the reference ("× ref");
@@ -833,8 +907,9 @@ attribution, and the mean weight over spans of training.
 `--blame_weighting rss` is the rule-based baseline (`cat_rss`, …). It
 removes the whole penalty when RSS puts the collision on the other car
 alone, and keeps all of it otherwise. It needs no DenseTNT. Every
-collision's RSS verdict is logged in both modes, and `summarize_blame`
-reports RSS's verdicts and its agreement with the counterfactual one.
+collision's RSS and right-of-way verdicts are logged in both modes, and
+`summarize_blame` reports each one's verdicts and its agreement with the
+counterfactual one.
 
 The weighting is tested against a stand-in for the training env
 (`tests/responsibility/test_blame_reward.py`: a rear-ended ego keeps none of

@@ -108,6 +108,7 @@ def test_a_collision_the_ego_did_not_cause_is_not_penalised(tmp_path):
     assert row["crash_step"] == "25" and row["other_id"] == "1" and row["scene"] == "7"
     assert row["verdict"] == "other" and row["rule"] == "other" and float(row["weight"]) == 0.0
     assert row["rss"] == "other"  # RSS, logged alongside: the tailgater did not brake
+    assert (row["right_of_way"], row["right_of_way_case"]) == ("n/a", "following")  # rear-end: not its domain
     assert int(row["penalised_steps"]) == 14 and row["adversary"] == "1"
     assert "mean penalty weight 0.00" in weighting.summary()
 

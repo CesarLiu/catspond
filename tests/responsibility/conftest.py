@@ -36,7 +36,7 @@ def track(xy0, vel, heading=0.0, kind="VEHICLE", valid=None, length=4.8, width=2
     }
 
 
-def make_scene(tracks, sdc="0", ooi=("0", "1"), map_features=None):
+def make_scene(tracks, sdc="0", ooi=("0", "1"), map_features=None, lights=None):
     description = {
         "id": "test",
         "tracks": {str(k): v for k, v in tracks.items()},
@@ -44,7 +44,7 @@ def make_scene(tracks, sdc="0", ooi=("0", "1"), map_features=None):
             "100": {"type": "LANE_SURFACE_STREET", "polyline": np.array([[0.0, 0, 0], [50, 0, 0], [100, 0, 0]])},
             "101": {"type": "STOP_SIGN", "position": np.array([5.0, 5.0, 0.0]), "lane": ["100"]},
         },
-        "dynamic_map_states": {
+        "dynamic_map_states": lights if lights is not None else {
             "200": {"type": "TRAFFIC_LIGHT", "lane": "100", "stop_point": np.array([20.0, 0.0, 0.0]),
                     "state": {"object_state": ["LANE_STATE_GO"] * 50 + ["LANE_STATE_STOP"] * 41}},
         },
