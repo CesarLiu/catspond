@@ -174,6 +174,8 @@ LIGHTS = {  # WOMD lane state -> the control it imposes
     "LANE_STATE_FLASHING_STOP": STOP,  # a flashing red is a stop sign (21457(a))
     "LANE_STATE_FLASHING_CAUTION": NONE,  # a flashing yellow: proceed with caution
     "LANE_STATE_UNKNOWN": UNKNOWN,
+    # MetaDrive's names, should a converter store those (they drop the arrows)
+    "TRAFFIC_LIGHT_GREEN": GO, "TRAFFIC_LIGHT_YELLOW": GO, "TRAFFIC_LIGHT_RED": RED, "TRAFFIC_LIGHT_UNKNOWN": UNKNOWN,
 }
 PERMISSIVE = (GO, ARROW)
 

@@ -370,3 +370,36 @@ def test_old_crash_files_get_the_rule_verdicts(tmp_path):
     assert row["verdict"] == "ego" and row["crash_step"] == str(crash)  # the counterfactual columns are kept
     assert (row["right_of_way"], row["right_of_way_case"], row["priority"]) == ("ego", "stop-sign", "other")
     assert row["rss_case"] == "not-same-direction"
+
+
+def test_validation_over_a_scenarionet_folder(tmp_path):
+    import csv
+    import pickle
+
+    from scripts.responsibility import validate_right_of_way as val
+
+    # ScenarioNet's layout: an index at the top, scenes in a subfolder; the red-light
+    # runner passes 2 s after the holder, no collision
+    folder = tmp_path / "validation_interactive" / "validation_interactive_0"
+    folder.mkdir(parents=True)
+    (tmp_path / "validation_interactive" / "dataset_summary.pkl").write_bytes(pickle.dumps({}))
+    for name, sid in (("sd_a.pkl", "keep"), ("sd_b.pkl", "drop")):
+        scene = make_scene({"0": _along(EAST, 81.75 + 1.0 * (STEPS - 40)),
+                            "1": _along(NORTH, 78.25 + 1.0 * (STEPS - 60))},
+                           map_features=_crossroads(), lights=_lights(E_thr="GO", N_thr="STOP"))
+        description = scene.to_description()
+        description["metadata"]["scenario_id"] = sid
+        (folder / name).write_bytes(pickle.dumps(description))
+    ids = tmp_path / "ids.txt"
+    ids.write_text("# development set\ndrop\n")
+    out = tmp_path / "out"
+    args = ["--scenes", str(tmp_path / "validation_interactive"), "--exclude", str(ids), "--out-dir", str(out)]
+    rows = val.main(args)
+    assert len(rows) == 2 and not any(r["error"] for r in rows)
+    kept = next(r for r in rows if r["scenario_id"] == "keep")
+    assert (kept["case"], kept["holder"], kept["first"]) == ("red-light", "a", "a")
+    assert float(kept["lead"]) == pytest.approx(2.0, abs=0.15)  # to the step
+    assert next(r for r in rows if r["scenario_id"] == "drop")["case"] == "excluded"
+    assert "| red-light | 1 | 1 | 100% |" in (out / "summary.md").read_text()
+    assert len(val.main(args)) == 2  # resumed: nothing judged twice
+    assert len(list(csv.DictReader(open(out / "pairs.csv")))) == 2

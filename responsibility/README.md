@@ -739,6 +739,24 @@ WOMD lacks, and the holder it names passed first in only 40% (15 pairs) and
 25% (8 pairs). On the logged pairs the yield duty fails for 3% of the
 yielders, the duties' false-alarm rate on lawful driving.
 
+These 500 scenes were the development set: the driveway, through-road,
+oncoming and all-way-stop rules were added after looking at their
+disagreements. The held-out check runs over the rest of WOMD's
+validation_interactive split (converted with ScenarioNet), with the two
+objects of interest as the pair. It also evaluates the CVC's uncontrolled
+order on the pairs left "uncontrolled", in the same pass:
+
+```bash
+python -m scripts.responsibility.validate_right_of_way --scenes /data/womd_sn/validation_interactive \
+    --exclude responsibility/unitraj_configs/cat_scenario_ids.txt --workers 32 \
+    --out-dir logs/responsibility/right_of_way/validation_interactive
+```
+
+It writes `pairs.csv` (one row per scene; a re-run resumes) and
+`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval). On
+CAT's scenes (`--scenes raw_scenes_500 --pair sdc`) it reproduces the
+numbers above (103 of 118, 95% CI 80–92%) in 48 s on 8 processes.
+
 `compute_responsibility --rollouts` writes these columns with every
 collision. To add them to the crash files of a finished run, which a re-run
 skips, recompute the rule-based verdicts (RSS and right of way) in place.
