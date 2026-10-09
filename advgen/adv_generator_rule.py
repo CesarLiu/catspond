@@ -273,6 +273,8 @@ class AdvGenerator():
         count = 0
 
         for k,v in raw_map_features.items():
+            if v['type'] not in MDMapTypeConvert:
+                continue  # WOMD v1.2's DRIVEWAY, MetaDrive's UNKNOWN: DenseTNT was trained on v1.1 maps without them
             _id = int(k)
             _type = MDMapTypeConvert[v['type']]
 

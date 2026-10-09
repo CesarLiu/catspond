@@ -80,11 +80,25 @@ the light count differs in 222 scenes, and driveways were added. The
 right-of-way check moves from 87.3% to 86.5% on them.
 
 v1.2 adds DRIVEWAY features, and MetaDrive writes UNKNOWN for unknown lines
-and edges. DenseTNT's input leaves both out, since it was trained on v1.1
-maps without them and asserts types below 20. CAT's 500 scenes contain
-neither, so their inputs are unchanged. The open-loop tools read the new
-scenes as they read CAT's. The closed loop does not: CAT's `advgen` maps
-types without that guard, and MetaDrive training uses CAT's 500.
+and edges. DenseTNT's input leaves both out, both here (`scene.py`) and in
+CAT's `advgen`, since it was trained on v1.1 maps without them and asserts
+types below 20. CAT's 500 scenes contain neither, so their inputs are
+unchanged. MetaDrive builds its map from lanes, lines and edges only, so it
+ignores them anyway.
+
+DenseTNT also asserts map feature ids below 1000 for the points it uses.
+Ids reach 1000 in 8.1% of the 3166 scenes of the local shards, but the
+input keeps at most 20000 map points, in id order. That cap cuts the map
+in 237 of CAT's 500 scenes (CAT's behaviour, kept). No id of 1000 or more
+reached DenseTNT's view (80 m around a point 30 m ahead) at any step in
+CAT's scenes, their v1.2.1 conversions, or 444 new scenes.
+
+So the new scenes work in the closed loop too. `cat_advgen.py` on three
+new scenes with driveways ran MetaDrive and CAT's generation
+(`SDL_VIDEODRIVER=dummy` on a headless machine): 2 of 3 attacks succeeded,
+0.5 s per generation. The closed loop needs a folder of `sdc_in_ooi`
+scenes numbered `0.pkl` … in MetaDrive's order. `cat_RLtrain.py` takes
+scenes 0–399 for training and the rest for testing (`swap.scene_split`).
 
 ## Command reference
 
