@@ -223,6 +223,72 @@ To evaluate a trajectory produced in simulation instead of the log (e.g. the
 ego of a CAT-trained policy), replace the agent's track before computing:
 `Scene.with_track(agent, positions, headings, velocities)` over the 91 steps.
 
+### Forced yields: assertive without being unsafe
+
+β_s and the right of way's yield duty both read the unsafe end. A driver
+who takes the right of way from someone still far enough away to stop
+registers in neither. `responsibility/forced_yield.py` measures it, open
+loop, for a pair (the agent and another road user):
+
+- the conflict point, the conflict zones and the holder of the right of way
+  come from `right_of_way.py`;
+- at each step the agent enters its zone, it computes the braking demanded
+  of the other, `a_req = v² / (2 (d − v ρ))`. Here d is the other's distance
+  to its own zone, v its speed and ρ = 1 s;
+- the result is `forced`, the worst entry's a_req, counted only when the
+  other held the right of way.
+
+Above 4 m/s² (RSS's brake_min) the yield duty is violated. Below that,
+a_req grades how hard the agent made a holder brake that still could.
+
+The ground truth (`scripts/responsibility/make_go_first.py`) rewrites logged
+pairs in which the yielder let the holder pass first, so that the yielder
+goes first: it leaves its zone a post-encroachment time (PET) before the
+holder enters. The pairs come from `validate_right_of_way`'s `pairs.csv`.
+Two rewrites are made:
+
+- `delay` shifts the holder's whole track later. The yielder keeps its
+  lawful, logged motion, so its kinematics alone cannot tell the rewrite
+  apart. Only rules whose priority does not depend on time are rewritten:
+  stop-sign, driveway, through-road and left-turn, with no traffic light.
+- `retime` re-times the yielder along its own path, at ≤ 3 m/s² and
+  ≤ 15 m/s.
+
+The holder enters the conflict about 4 s into the 9.1 s clip, so `retime`
+rarely fits and PET 4 s never does. Logged pairs in which the yielder went
+first anyway (`log_yielder_first`) carry no label. They are the reference
+for the threshold: the braking that drivers who take a gap leave to the
+holder.
+
+```bash
+python -m scripts.responsibility.make_go_first --pairs logs/responsibility/right_of_way/validation_interactive/pairs.csv \
+    --out-dir logs/responsibility/forced_yield/scenes --pet 1 2 4 --workers 4
+S=logs/responsibility/forced_yield/scenes
+python -m scripts.responsibility.evaluate_forced_yield --out-dir logs/responsibility/forced_yield/eval \
+    --sets log=$S/log delay_pet2=$S/delay_pet2 delay_pet1=$S/delay_pet1 retime_pet1=$S/retime_pet1 \
+           natural=$S/log_yielder_first --reference natural --workers 4
+```
+
+Held-out WOMD (the 14 local shards above, 2026-10-10) gives 242 lawful
+pairs. The threshold, the 0.9 quantile of the 42 logged go-first pairs,
+is 1.39 m/s²:
+
+| set | pairs | other holds, agent entered | forced > 1 m/s² | > 2 | > 4 (duty violated) | > 1.39 |
+|---|---|---|---|---|---|---|
+| logged, holder first | 242 | 239 | 2% | 2% | 2% | 2% |
+| logged, yielder first (reference) | 42 | 37 | 30% | 3% | 0% | 8% |
+| delay, PET 2 s | 33 | 25 | 80% | 28% | 0% | 76% |
+| delay, PET 1 s | 76 | 59 | 98% | 80% | 29% | 88% |
+| retime, PET 1 s | 8 | 3 | 100% | 67% | 67% | 67% |
+
+At PET 2 s, the yield duty flags none of the rewritten pairs. a_req flags
+76% of them, against 2% of the lawful ones and 8% of the logged gap-takers.
+In 8 of 33 (PET 2 s) and 17 of 76 (PET 1 s) rewritten pairs the measure
+finds no holder. The rule read depends on the step the conflict is judged
+at: judged at the later arrival instead of the closest approach, 2 of 7 of
+those pairs lose their holder in the log too. Such pairs count as not
+judged, so the coverage of the right of way bounds this measure.
+
 ## Visualisation
 
 ```bash
@@ -1490,6 +1556,12 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   agent's influence enters only through its recent past and current state.
 - Thresholds are relative to a reference population; the verdict is "unusual
   compared with that driving", not an absolute safety judgement.
+- The right of way names a holder for only 30% of the held-out pairs whose
+  paths cross or merge (330 of 1091): same-direction pairs are RSS's, and
+  lights without a recorded state, junctions the map shows no control for
+  and all-way stops both entered before the clip began get none. Forced
+  yields (above) are measured only where it names one, and its reading of
+  the rule can change with the step the conflict is judged at.
 - Over the 2 s metric horizon, the alternatives stay close to the logged
   future: DenseTNT's median ADE is 0.26 m. They continue a deceleration that
   has begun, but rarely anticipate one that has not (see "Reactions" above).

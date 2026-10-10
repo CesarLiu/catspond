@@ -74,6 +74,11 @@
 - 对手模式：`none` 和 `cat`。
 - **产出：** 第一张结论表，例如"CAT 训练降低了碰撞率，但胆怯窗口占比比人类高 X 倍"。这张表本身就是方向 3 的主要贡献。
 
+### M3.5 激进但不危险：强迫路权方让行（开环）
+> **状态：** 已完成第一版（2026-10-10）。`responsibility/forced_yield.py`：agent 进入冲突区的每一步，路权方要在冲突区前停下所需的减速度 a_req = v²/(2(d − vρ))，ρ = 1 s；只在对方持有路权时计入（`forced`）。a_req > 4 m/s² 等价于违反 yield 义务，2–4 m/s² 是"逼人让行但还安全"的区间。Ground truth 由 `make_go_first.py` 构造：从 logged 合法让行的对出发，把路权方整体推迟（`delay`），或把让行方沿原路径重新定时（`retime`），使让行方在路权方进入冲突区前 PET 秒离开。评估用 `evaluate_forced_yield.py`。在 held-out WOMD（本地 14 个分片）上，阈值取 logged 先行者 forced 的 0.9 分位数（1.39 m/s²）：logged 合法让行 2% 超阈值，logged 先行者 8%，`delay` PET 2 s 76%（其中违反 yield 义务的 0%），PET 1 s 88%。同一轮把 `right_of_way.py` 的同向规则（lane-change、merge）默认关闭：held-out 上 lane-change 的路权方先过只有 38%，同向冲突的 yield 义务对 logged 让行方误报 52–56%；交叉类规则路权方先过 83%（开发集 89%），义务误报 2%。
+- 局限：只有 30% 的交叉/汇入对能定出路权方；路权规则的读取随判定时间步变化，`delay` PET 2 s 的 33 对里有 8 对重判后没有路权方。
+- 下一步：在同样的场景集上跑 β_s / β_c（DenseTNT），检验 a_req 是否抓到了 β 抓不到的激进。
+
 **风险：** DenseTNT 学的是人类驾驶。RL 策略的状态分布偏离数据太多时（例如极低速、贴路边），反事实样本本身不可靠。在论文里讨论这一点；同时统计每个窗口自车处于"数据分布内"的程度，例如自车 logged 历史在 DenseTNT 下的 goal 对数似然。
 
 ---
