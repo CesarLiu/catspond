@@ -729,7 +729,8 @@ crossing ones need right-of-way rules from the lane graph, so they get
 The **right of way** (`responsibility/right_of_way.py`, columns
 `right_of_way`, `right_of_way_case`, `priority`) is the traffic-law
 baseline for those: collisions between different paths (crossing, turning
-across, merging, changing lanes). WOMD was recorded in US cities, so the
+across, entering a road). Same-direction conflicts (cut-ins, lane changes,
+merges into one lane) are left to RSS. WOMD was recorded in US cities, so the
 rules are the California Vehicle Code's. Everything is read from the
 `Scene` (trajectories, lane graph, traffic-light states, stop signs), so
 logged scenes and rollouts are judged alike, without MetaDrive.
@@ -741,11 +742,14 @@ logged scenes and rollouts are judged alike, without MetaDrive.
    control is the light of the intersection lane it entered, in the state
    it showed at the stop line (WOMD lights and stop signs control the lane
    that starts at the stop line), or a stop sign. The first rule that
-   applies names the holder: red-light (21453), lane-change (21658),
-   driveway (21804), protected-arrow, left-turn (21801), first-in at a green
-   light or by arrival at an all-way stop, stop-sign (21802), through-road at
-   a T junction (21800(c)). With no rule the case says why: signal-unknown,
-   uncontrolled, oncoming, same-direction, following.
+   applies names the holder: red-light (21453), driveway (21804),
+   protected-arrow, left-turn (21801), first-in at a green light or by
+   arrival at an all-way stop, stop-sign (21802), through-road at a T
+   junction (21800(c)). With no rule the case says why: signal-unknown,
+   uncontrolled, oncoming, same-direction, following. Same-direction pairs
+   (approach headings within 45°) get neither a holder nor a verdict; the
+   lane-change (21658) and merge rules behind `same_direction_rules` failed
+   the held-out check (below).
 3. **Duties**, as Signal Temporal Logic over the steps both are seen
    (`responsibility/stl.py`, robustness in metres):
    - `yield(y, p) = G(enters(y) → cleared(p) ∨ can_stop(p))`: the yielder
@@ -767,7 +771,7 @@ Checked on CAT's 500 logged scenes: for the self-driving car and the other
 object of interest at their closest approach, logged drivers mostly keep
 the right of way, so the holder should usually pass P* first. Of 220 pairs
 whose paths cross or merge and where one passed at least 0.5 s before the
-other, 118 get a holder, and it passed first in 87%:
+other, 113 get a holder, and it passed first in 89% (101; 95% CI 82–94%):
 
 | rule | pairs | holder passed first |
 |---|---|---|
@@ -779,22 +783,25 @@ other, 118 get a holder, and it passed first in 87%:
 | left-turn | 7 | 100% |
 
 Most disagreements are a yielder that went first lawfully while the holder
-was still far away. The other 102 pairs get no holder: signal-unknown 38
-(no state for that light), uncontrolled 23, all-way-stop/order-unknown 17
-(both waiting when the clip began), same-direction 15, oncoming 9. The
+was still far away. The other 107 pairs get no holder: signal-unknown 38
+(no state for that light), uncontrolled 23, same-direction 20,
+all-way-stop/order-unknown 17 (both waiting when the clip began), oncoming
+9. The
 CVC's order for uncontrolled intersections (first-in, then yield to the
 right, 21800(a)/(b)) is off by default (`uncontrolled_order`): the map shows
 no control there, but in reality such junctions mostly have signs or lights
 WOMD lacks, and the holder it names passed first in only 40% (15 pairs) and
-25% (8 pairs). On the logged pairs the yield duty fails for 3% of the
-yielders, the duties' false-alarm rate on lawful driving.
+25% (8 pairs). On the logged pairs the yield duty fails for 2 of 112
+yielders (2%), the duties' false-alarm rate on lawful driving.
 
 These 500 scenes were the development set: the driveway, through-road,
 oncoming and all-way-stop rules were added after looking at their
 disagreements. The held-out check runs over the rest of WOMD's
 validation_interactive split (converted by `convert_womd_split`, below), with the two
-objects of interest as the pair. It also evaluates the CVC's uncontrolled
-order on the pairs left "uncontrolled", in the same pass:
+objects of interest as the pair. In the same pass it also evaluates the
+rules that are off by default: the CVC's uncontrolled order on the pairs
+left "uncontrolled", and the same-direction rules on the pairs left
+"same-direction":
 
 ```bash
 python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/cat_format/validation_interactive/scenes \
@@ -803,9 +810,40 @@ python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/ca
 ```
 
 It writes `pairs.csv` (one row per scene; a re-run resumes) and
-`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval). On
-CAT's scenes (`--scenes raw_scenes_500 --pair sdc`) it reproduces the
-numbers above (103 of 118, 95% CI 80–92%) in 48 s on 8 processes.
+`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval, and
+how often logged yielders kept the yield duty). On CAT's scenes
+(`--scenes raw_scenes_500 --pair sdc`) it reproduces the numbers above in
+48 s on 8 processes.
+
+Held out (2026-10-10): the 14 of 150 shards of validation_interactive on
+the L4 machine, 3166 scenes, 47 of them CAT's and excluded. Of 1091 pairs
+whose paths cross or merge with a passing order, 330 get a holder, and it
+passed first in **83%** (275; 95% CI 79–87%), against 89% on the
+development set. Logged yielders kept the yield duty in 316 of 323 (2%
+false alarms).
+
+| rule | pairs with a holder and an order | holder passed first | yield duty kept |
+|---|---|---|---|
+| stop-sign | 130 | 92% | 123 of 127 |
+| driveway | 62 | 74% | 61 of 61 |
+| through-road | 40 | 85% | 38 of 39 |
+| all-way-stop/first-in | 35 | 91% | 35 of 35 |
+| left-turn | 28 | 64% | 26 of 28 |
+| red-light | 23 | 87% | 23 of 23 |
+| all-way-stop/yield-right | 11 | 36% | 9 of 9 |
+| *same-direction rules:* lane-change | 85 | 38% | 40 of 91 |
+| *same-direction rules:* merge | 68 | 97% | 29 of 61 |
+
+The same-direction rules fail there. A lane changer usually goes first,
+lawfully, into a gap it judged safe, so "the one not changing lanes goes
+first" does not hold (38%); and the conflict zone of the duties assumes
+crossing paths, so the yield duty fails for 56% of logged lane-change and
+52% of merging yielders. They are off by default (`same_direction_rules`);
+RSS's lateral and longitudinal checks cover those conflicts. The CVC's
+uncontrolled order stays off as well (first-in 59% of 51, yield-right 32%
+of 22). The pairs without a holder are same-direction 352, signal-unknown
+235, uncontrolled 73, all-way-stop/order-unknown 67, oncoming 32, plus 612
+following one another.
 
 `compute_responsibility --rollouts` writes these columns with every
 collision. To add them to the crash files of a finished run, which a re-run

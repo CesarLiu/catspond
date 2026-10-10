@@ -14,10 +14,13 @@ passed at least --min-lead seconds before the other; a yielder may still
 go first lawfully, with the holder far away, so agreement below 100% is
 expected even for a correct rule.
 
-For pairs the default rules leave "uncontrolled", the CVC's order for
-uncontrolled intersections (first-in, then yield to the right; off by
-default, RightOfWayParams.uncontrolled_order) is evaluated too, in the
-columns case_cvc / holder_cvc, so one pass measures both choices.
+Two rule sets that are off by default are evaluated in the same pass,
+in the columns case_opt / holder_opt / yield_kept_opt, so one pass
+measures both choices: for pairs the default rules leave "uncontrolled",
+the CVC's order for uncontrolled intersections (first-in, then yield to
+the right; RightOfWayParams.uncontrolled_order); for pairs they leave
+"same-direction", the lane-change and merge priorities
+(RightOfWayParams.same_direction_rules).
 
 The scenes CAT's adversarial training uses were the development set of
 the rules; --exclude responsibility/unitraj_configs/cat_scenario_ids.txt
@@ -56,10 +59,12 @@ from responsibility.right_of_way import (  # noqa: E402
 )
 from responsibility.scene import Scene  # noqa: E402
 
-FIELDS = ["file", "scenario_id", "a", "b", "at", "gap", "kind", "case", "holder", "case_cvc", "holder_cvc",
-          "control_a", "control_b", "turn_a", "turn_b", "first", "lead", "yield_kept", "yield_swapped_kept", "error"]
+FIELDS = ["file", "scenario_id", "a", "b", "at", "gap", "kind", "case", "holder", "case_opt", "holder_opt",
+          "control_a", "control_b", "turn_a", "turn_b", "first", "lead", "yield_kept", "yield_swapped_kept",
+          "yield_kept_opt", "error"]
 DEFAULT = RightOfWayParams()
-CVC = RightOfWayParams(uncontrolled_order=True)
+OPTIONAL = {"uncontrolled": (RightOfWayParams(uncontrolled_order=True), "CVC: "),
+            "same-direction": (RightOfWayParams(same_direction_rules=True), "same-direction rules: ")}
 
 
 def parse_args(argv=None):
@@ -136,11 +141,12 @@ def judge(job):
         prio = priority(scene, a, b, at, DEFAULT)
         row.update(a=scene.track_ids[a], b=scene.track_ids[b], at=at, gap=round(float(gap[at]), 2), case=prio.case,
                    holder="" if prio.holder is None else "a" if prio.holder == a else "b",
-                   case_cvc=prio.case, kind="" if prio.conflict is None else prio.conflict.kind)
-        row["holder_cvc"] = row["holder"]
-        if prio.case == "uncontrolled":
-            cvc = priority(scene, a, b, at, CVC)
-            row.update(case_cvc=cvc.case, holder_cvc="" if cvc.holder is None else "a" if cvc.holder == a else "b")
+                   case_opt=prio.case, kind="" if prio.conflict is None else prio.conflict.kind)
+        row["holder_opt"] = row["holder"]
+        opt = None
+        if prio.case in OPTIONAL:
+            opt = priority(scene, a, b, at, OPTIONAL[prio.case][0])
+            row.update(case_opt=opt.case, holder_opt="" if opt.holder is None else "a" if opt.holder == a else "b")
         if prio.approaches is not None:
             pa, pb = prio.approaches
             row.update(control_a=pa.control, control_b=pb.control, turn_a=pa.turn, turn_b=pb.turn)
@@ -151,6 +157,9 @@ def judge(job):
                 kept, swapped = yields_kept(scene, a, b, prio)
                 row.update(yield_kept="" if kept is None else int(kept),
                            yield_swapped_kept="" if swapped is None else int(swapped))
+            elif opt is not None and opt.holder is not None and opt.conflict is not None:
+                kept, _ = yields_kept(scene, a, b, opt)
+                row["yield_kept_opt"] = "" if kept is None else int(kept)
     except Exception as e:  # one malformed scene must not stop a run over tens of thousands
         row["error"] = f"{type(e).__name__}: {e}"
     return row
@@ -167,23 +176,27 @@ def wilson(k: int, n: int, z: float = 1.96):
 
 
 def summarize(rows, min_lead: float):
-    """[(case, pairs, ordered, holder first, (low, high))] per rule, default
-    rules first, then the CVC order where the default says "uncontrolled"."""
+    """[(case, pairs, ordered, holder first, (low, high), yield duty kept,
+    entries)] per rule, default rules first, then the optional rules where
+    the default says "uncontrolled" or "same-direction" (OPTIONAL)."""
     def ordered(r):
         return r["first"] in ("a", "b") and (r["lead"] == "" or float(r["lead"]) >= min_lead)
 
     judged = [r for r in rows if r["case"] not in ("excluded", "no-pair", "") and not r["error"]]
     out = []
-    for column, holder, prefix, subset in (("case", "holder", "", judged),
-                                           ("case_cvc", "holder_cvc", "CVC: ",
-                                            [r for r in judged if r["case"] == "uncontrolled"])):
+    sets = [("case", "holder", "yield_kept", "", judged)]
+    sets += [("case_opt", "holder_opt", "yield_kept_opt", prefix, [r for r in judged if r["case"] == default])
+             for default, (_, prefix) in OPTIONAL.items()]
+    for column, holder, kept, prefix, subset in sets:
         cases = {}
         for r in subset:
             cases.setdefault(r[column], []).append(r)
         for case, rs in sorted(cases.items(), key=lambda kv: -len(kv[1])):
             counted = [r for r in rs if ordered(r) and r[holder]]
             k = sum(r[holder] == r["first"] for r in counted)
-            out.append((prefix + case, len(rs), len(counted), k, wilson(k, len(counted))))
+            entries = [r for r in rs if r.get(kept, "") != ""]
+            out.append((prefix + case, len(rs), len(counted), k, wilson(k, len(counted)),
+                        sum(int(r[kept]) for r in entries), len(entries)))
     return out
 
 
@@ -201,11 +214,13 @@ def markdown(rows, min_lead: float) -> str:
              f"({100 * k / max(len(decided), 1):.1f}%, 95% CI {100 * lo:.1f}-{100 * hi:.1f}%)",
              f"yield duty kept by the yielder: {sum(int(r['yield_kept']) for r in kept)} of {len(kept)}; "
              f"by the holder had it been the yielder: {sum(int(r['yield_swapped_kept']) for r in kept)}",
-             "", "| rule | pairs | with a holder and an order | holder first | 95% CI |", "|---|---|---|---|---|"]
-    for case, n, counted, k, (lo, hi) in summarize(rows, min_lead):
+             "", "| rule | pairs | with a holder and an order | holder first | 95% CI | yield duty kept |",
+             "|---|---|---|---|---|---|"]
+    for case, n, counted, k, (lo, hi), kept_k, kept_n in summarize(rows, min_lead):
         rate = "–" if counted == 0 else f"{100 * k / counted:.0f}%"
         ci = "–" if counted == 0 else f"{100 * lo:.0f}–{100 * hi:.0f}%"
-        lines.append(f"| {case} | {n} | {counted} | {rate} | {ci} |")
+        duty = "–" if kept_n == 0 else f"{kept_k} of {kept_n}"
+        lines.append(f"| {case} | {n} | {counted} | {rate} | {ci} | {duty} |")
     return "\n".join(lines)
 
 
