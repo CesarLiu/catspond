@@ -609,10 +609,13 @@ def _window(scene: Scene, a: int, b: int, at: int) -> np.ndarray:
     return np.arange(first, last + 1)
 
 
-def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayParams] = None) -> Priority:
+def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayParams] = None,
+             conflict: Optional[Conflict] = None) -> Priority:
     """Who of ``a`` and ``b`` had the right of way at the conflict their
     paths up to step ``at`` lead to (e.g. a collision, or their closest
-    approach)."""
+    approach). A given ``conflict`` (its arc lengths along each agent's
+    track from its first seen step) is judged instead of the one found
+    from the paths up to ``at``."""
     p = params or RightOfWayParams()
     steps = _window(scene, a, b, at)
     if steps.size == 0:
@@ -623,7 +626,7 @@ def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayP
     pa, pb = _Path(scene, a, last, p.extend), _Path(scene, b, last, p.extend)
     before = steps[-2] if last == at else last  # where they were before contact
     ref = (scene.position[a, before, :2] + scene.position[b, before, :2]).astype(float) / 2
-    conflict = find_conflict(pa, pb, ref, p)
+    conflict = conflict or find_conflict(pa, pb, ref, p)
     if conflict is None:
         return Priority(None, "no-conflict")
     if _following(scene, a, b, int(steps[0]), pa, pb, p):

@@ -255,10 +255,28 @@ Two rewrites are made:
   ≤ 15 m/s.
 
 The holder enters the conflict about 4 s into the 9.1 s clip, so `retime`
-rarely fits and PET 4 s never does. Logged pairs in which the yielder went
-first anyway (`log_yielder_first`) carry no label. They are the reference
-for the threshold: the braking that drivers who take a gap leave to the
-holder.
+rarely fits and PET 4 s hardly ever does. Logged pairs in which the yielder
+went first anyway (`log_yielder_first`) carry no label. They are the
+reference for the threshold: the braking that drivers who take a gap leave
+to the holder.
+
+Open loop the whole tracks are known, so the conflict point is the first
+crossing of the two tracks (`track_conflict`), judged at the step the later
+of the two reaches it. Before, P* came from the paths up to the closest
+approach, extended 15 m straight on, as for a collision; P* then moved
+with the timing, and a rewrite was judged at a different point than its
+log. Tracks that do not cross are judged at their closest approach. A
+rewrite keeps the paths, so it keeps P*.
+
+`evaluate_forced_yield` judges a rewritten scene with its log's right of
+way, moved onto the rewritten tracks (`carry_priority`). The rewrite keeps
+the map and, for the rules it is made for, the priority, so the ground
+truth tests the braking demand alone; `validate_right_of_way` checks the
+right of way. The rewritten scene's own reading agrees in about 80% of
+pairs. It differs where the delayed holder's straight run-up, which the
+right of way reads as its approach, crosses other lanes, or where a car
+leaving a driveway is matched to the road at P*. `--own-priority` judges
+each scene by its own reading.
 
 ```bash
 python -m scripts.responsibility.make_go_first --pairs logs/responsibility/right_of_way/validation_interactive/pairs.csv \
@@ -267,27 +285,36 @@ S=logs/responsibility/forced_yield/scenes
 python -m scripts.responsibility.evaluate_forced_yield --out-dir logs/responsibility/forced_yield/eval \
     --sets log=$S/log delay_pet2=$S/delay_pet2 delay_pet1=$S/delay_pet1 retime_pet1=$S/retime_pet1 \
            natural=$S/log_yielder_first --reference natural --workers 4
+python -m scripts.responsibility.visualize_forced_yield --scenes $S --sets delay_pet2 delay_pet1 log_yielder_first \
+    --out-dir logs/responsibility/forced_yield/figures      # index.md: a gallery sorted by the demand; --gif animates
 ```
 
+The figures put the log next to the rewrite. Each map shows both tracks,
+with a dot every second, P*, the conflict zones, and the footprints at the
+agent's worst entry. A time–distance panel shows each agent's distance to
+P* against time.
+
 Held-out WOMD (the 14 local shards above, 2026-10-10) gives 242 lawful
-pairs. The threshold, the 0.9 quantile of the 42 logged go-first pairs,
-is 1.39 m/s²:
+pairs. The threshold is the 0.9 quantile of the 42 logged go-first pairs,
+1.53 m/s²:
 
-| set | pairs | other holds, agent entered | forced > 1 m/s² | > 2 | > 4 (duty violated) | > 1.39 |
+| set | pairs | other holds, agent entered | forced > 1 m/s² | > 2 | > 4 (duty violated) | > 1.53 |
 |---|---|---|---|---|---|---|
-| logged, holder first | 242 | 239 | 2% | 2% | 2% | 2% |
-| logged, yielder first (reference) | 42 | 37 | 30% | 3% | 0% | 8% |
-| delay, PET 2 s | 33 | 25 | 80% | 28% | 0% | 76% |
-| delay, PET 1 s | 76 | 59 | 98% | 80% | 29% | 88% |
-| retime, PET 1 s | 8 | 3 | 100% | 67% | 67% | 67% |
+| logged, holder first | 242 | 209 | 3% | 3% | 3% | 3% |
+| logged, yielder first (reference) | 42 | 31 | 35% | 3% | 0% | 10% |
+| delay, PET 4 s | 2 | 2 | 100% | 0% | 0% | 50% |
+| delay, PET 2 s | 18 | 18 | 89% | 56% | 6% | 83% |
+| delay, PET 1 s | 47 | 47 | 98% | 79% | 28% | 87% |
+| retime, PET 1 s | 4 | 4 | 75% | 75% | 25% | 75% |
 
-At PET 2 s, the yield duty flags none of the rewritten pairs. a_req flags
-76% of them, against 2% of the lawful ones and 8% of the logged gap-takers.
-In 8 of 33 (PET 2 s) and 17 of 76 (PET 1 s) rewritten pairs the measure
-finds no holder. The rule read depends on the step the conflict is judged
-at: judged at the later arrival instead of the closest approach, 2 of 7 of
-those pairs lose their holder in the log too. Such pairs count as not
-judged, so the coverage of the right of way bounds this measure.
+At PET 2 s the yield duty flags 1 of the 18 rewritten pairs. That pair is
+a left turn whose measured PET is 1.3 s: after a merge the two paths
+coincide, so the zone ends where it was estimated only roughly. a_req flags
+83% of the rewritten pairs, against 3% of the lawful ones and 10% of the
+logged gap-takers. Few pairs survive the rewrite: of 242 lawful pairs, 48
+are under time-dependent rules or at lights, 46 have a yielder that never
+leaves its zone in the clip, and 41 have no holder at the first track
+crossing. At PET 2 s, 85 more would put the holder's entry past the clip.
 
 ## Visualisation
 

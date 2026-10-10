@@ -73,7 +73,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np  # noqa: E402
 
 from responsibility.motion_filter import collisions  # noqa: E402
-from responsibility.right_of_way import RightOfWayParams, _Path, _signals, _window, priority  # noqa: E402
+from responsibility.forced_yield import pair_priority  # noqa: E402
+from responsibility.right_of_way import RightOfWayParams, _Path, _signals, _window  # noqa: E402
 from responsibility.scene import Scene, sidecar_index  # noqa: E402
 
 DT = 0.1  # s per step
@@ -97,12 +98,15 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def zones(scene: Scene, y: int, h: int, at: int, params: RightOfWayParams):
-    """The pair's conflict at ``at``: (y's arc length to clear its zone,
-    the step h first enters its zone, the step y has cleared it, None if
-    it never does), on the steps both are seen."""
-    prio = priority(scene, y, h, at, params)
-    c = prio.conflict
+def zones(scene: Scene, y: int, h: int, params: RightOfWayParams):
+    """The pair's conflict as forced_yield.py judges it (pair_priority:
+    the first crossing of their tracks, which re-timing along the same
+    paths keeps): (y's arc length to clear its zone, the step h first
+    enters its zone, the step y has cleared it, None if it never does), on
+    the steps both are seen. None when h does not hold the right of way
+    there."""
+    prio = pair_priority(scene, y, h, params=params)
+    c = None if prio is None else prio.conflict
     if c is None or prio.holder != h:
         return None
     steps = _window(scene, y, h, scene.n_steps - 1)
@@ -221,7 +225,7 @@ def make(job):
     out = {group: (first_ooi(scene, y), meta)}
     if group != "log":
         return row["scenario_id"], out, {}
-    z = zones(scene, y, h, int(row["at"]), RightOfWayParams())
+    z = zones(scene, y, h, RightOfWayParams())
     dropped = {}
     for mode in args.mode:
         for pet in args.pet:

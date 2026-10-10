@@ -10,10 +10,12 @@ being dangerous, and neither registers it. This module measures it on the
 two agents' tracks as they are (logged, or the agent's planned or
 simulated track against the others' logs, which do not react).
 
-Conflict and right of way come from right_of_way.py: the conflict point P*
-of the two paths at the step judged (``at``; by default their closest
-approach), each agent's conflict zone around it, and the holder of the
-right of way (``priority``). At every step the agent enters its zone, the
+Conflict and right of way come from right_of_way.py: each agent's conflict
+zone around the conflict point P*, and the holder of the right of way
+(``priority``). Open loop the whole tracks are known, so P* is the first
+crossing of the two tracks (track_conflict), judged when the later of the
+two reaches it; tracks that do not cross are judged at their closest
+approach (pair_priority). At every step the agent enters its zone, the
 braking it demands of the other is
 
     a_req = v_o^2 / (2 (d_o - v_o rho))                              [m/s^2]
@@ -40,15 +42,15 @@ crossing paths.
 """
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
-from responsibility.right_of_way import RightOfWayParams, _crossings, _enters, _Path, _signals, _window, priority
+from responsibility.right_of_way import (Conflict, Priority, RightOfWayParams, _angle, _crossings, _enters, _Path,
+                                         _signals, _window, priority)
 from responsibility.scene import Scene
 
 STANDSTILL = 0.1  # m/s: below this the other stands and needs no braking
-CROSSING_NEAR = 100.0  # m: RightOfWayParams.near when the conflict is judged at the later arrival
 
 
 def required_braking(distance, speed, rho: float) -> np.ndarray:
@@ -83,26 +85,27 @@ class ForcedYield:
                 "demand_on_agent": num(self.demand_on_agent)}
 
 
-def crossing_step(scene: Scene, a: int, b: int) -> Optional[int]:
-    """The step the later of a and b reaches the crossing of their whole
-    tracks that they reach closest in time (None: the tracks do not cross,
-    or one is not seen then). Paths up to that step reach P*: the later
-    one stands at it, the earlier one has passed it."""
+def track_conflict(scene: Scene, a: int, b: int) -> Optional[Tuple[Conflict, int]]:
+    """The first crossing of a's and b's whole tracks (the smallest sum of
+    their arc lengths to it: where a merge begins, when the tracks cross
+    more than once) and the step the later of the two reaches it. None
+    when the tracks do not cross or one never reaches the crossing. It
+    depends on the paths only, not on their timing, so a pair re-timed
+    along the same paths keeps its P*."""
     last = scene.n_steps - 1
     pa, pb = _Path(scene, a, last, 0.0), _Path(scene, b, last, 0.0)
-    best = None
-    for s_a, s_b, _ in _crossings(pa, pb):
-        t = []
-        for path, s in ((pa, s_a), (pb, s_b)):
-            reached = np.flatnonzero(path.s[:path.n_real] >= s)
-            t.append(int(path.steps[reached[0]]) if reached.size else None)
-        if None in t:
-            continue
-        if best is None or abs(t[0] - t[1]) < best[0]:
-            best = (abs(t[0] - t[1]), max(t))
-    if best is None or not (scene.valid[a, best[1]] and scene.valid[b, best[1]]):
+    crossings = _crossings(pa, pb)
+    if not crossings:
         return None
-    return best[1]
+    s_a, s_b, point = min(crossings, key=lambda c: c[0] + c[1])
+    t = []
+    for path, s in ((pa, s_a), (pb, s_b)):
+        reached = np.flatnonzero(path.s[:path.n_real] >= s)
+        if not reached.size:
+            return None
+        t.append(int(path.steps[reached[0]]))
+    angle = abs(float(_angle(pa.heading_at(s_a) - pb.heading_at(s_b))))
+    return Conflict(np.asarray(point, dtype=float), (float(s_a), float(s_b)), angle, "crossing"), max(t)
 
 
 def _demand(in_x, in_o, cleared_o, speed_o, rho):
@@ -116,30 +119,54 @@ def _demand(in_x, in_o, cleared_o, speed_o, rho):
     return float(a[k]), int(k)
 
 
-def forced_yield(scene: Scene, agent: int, other: int, at: Optional[int] = None,
-                 params: Optional[RightOfWayParams] = None) -> ForcedYield:
-    """The braking ``agent``'s entries into the conflict with ``other``
-    demanded of it (module docstring). ``at``: the step whose paths define
-    the conflict; by default the pair's closest approach, or, when the
-    paths up to it neither cross nor merge, the step the later of the two
-    reaches the crossing of their whole tracks (crossing_step)."""
+def pair_priority(scene: Scene, agent: int, other: int, at: Optional[int] = None,
+                  params: Optional[RightOfWayParams] = None):
+    """right_of_way.priority of the pair at ``at``. By default at the
+    first crossing of their whole tracks (track_conflict), judged at the
+    step the later of the two reaches it: open loop the whole tracks are
+    known, and the conflict found from the paths up to one step (extended
+    EXTEND m straight on, as for a collision) moves with that step. Tracks
+    that do not cross (a merge, a near miss) are judged at their closest
+    approach. None when the two are never seen together."""
     p = params or RightOfWayParams()
     both = scene.valid[agent] & scene.valid[other]
     if not both.any():
+        return None
+    if at is not None:
+        return priority(scene, agent, other, at, p)
+    found = track_conflict(scene, agent, other)
+    if found is not None:
+        conflict, at = found
+        if not both[at]:  # one is no longer seen when the other arrives: judge where both last were
+            at = int(np.flatnonzero(both[:at + 1])[-1]) if both[:at + 1].any() else int(np.flatnonzero(both)[0])
+        return priority(scene, agent, other, at, p, conflict=conflict)
+    gap = np.linalg.norm(scene.position[agent, :, :2] - scene.position[other, :, :2], axis=-1)
+    return priority(scene, agent, other, int(np.argmin(np.where(both, gap, np.inf))), p)
+
+
+def carry_priority(prio: Optional[Priority], scene: Scene, agent: int, other: int) -> Optional[Priority]:
+    """``prio``, judged for the pair in another version of the scene with
+    the same paths (a re-timed one), moved onto ``scene``: same holder and
+    rule, its P* re-measured along this scene's tracks (whose first seen
+    point may differ, e.g. a delayed agent coming from further back)."""
+    if prio is None or prio.conflict is None:
+        return prio
+    c, last = prio.conflict, scene.n_steps - 1
+    s = tuple(_Path(scene, x, last, 0.0).project(c.point)[0] for x in (agent, other))
+    return replace(prio, conflict=replace(c, s=s))
+
+
+def forced_yield(scene: Scene, agent: int, other: int, at: Optional[int] = None,
+                 params: Optional[RightOfWayParams] = None, prio: Optional[Priority] = None) -> ForcedYield:
+    """The braking ``agent``'s entries into the conflict with ``other``
+    demanded of it (module docstring). ``at``: the step whose paths define
+    the conflict (pair_priority). ``prio``: the pair's right of way judged
+    elsewhere, used instead (e.g. in the logged scene a re-timed one was
+    made from, moved onto this one by carry_priority)."""
+    p = params or RightOfWayParams()
+    prio = prio if prio is not None else pair_priority(scene, agent, other, at, p)
+    if prio is None:
         return ForcedYield("not-seen-together", None, "none")
-    if at is None:
-        gap = np.linalg.norm(scene.position[agent, :, :2] - scene.position[other, :, :2], axis=-1)
-        prio = priority(scene, agent, other, int(np.argmin(np.where(both, gap, np.inf))), p)
-        if prio.conflict is None or prio.conflict.kind == "closest":
-            # paths up to the closest approach (plus EXTEND m) stop short of P* when one passed
-            # seconds before the other; judge the crossing of their whole tracks instead
-            at = crossing_step(scene, agent, other)
-            if at is not None:
-                late = priority(scene, agent, other, at, replace(p, near=max(p.near, CROSSING_NEAR)))
-                if late.conflict is not None and late.conflict.kind != "closest":
-                    prio = late
-    else:
-        prio = priority(scene, agent, other, at, p)
     holder = "none" if prio.holder is None else "agent" if prio.holder == agent else "other"
     c = prio.conflict
     out = ForcedYield(prio.case, None if c is None else c.kind, holder)

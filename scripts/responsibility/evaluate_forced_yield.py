@@ -9,6 +9,15 @@ self-driving car). For every scene it computes the braking the agent's
 entry into the conflict demanded of the other, and whether the other held
 the right of way (``forced``: the demand counts only then).
 
+A rewritten scene (make_go_first.py) is judged with the right of way of
+the logged scene it came from (<set>/../log/<scene>.pkl), unless
+--own-priority: the rewrite keeps the paths, the map and, for the rules
+it is made for, the priority, so this tests the braking demand alone; the
+right of way itself is checked by validate_right_of_way.py. A delayed
+holder comes from further back than its log, along a straight line the
+right of way would read as its approach. Column holder_own gives the
+rewritten scene's own reading, and the summary how often it agrees.
+
 Writes OUT/pairs.csv (one row per set and scene) and OUT/summary.md: per
 set, the pairs, how many have the other as holder, and of those the share
 forced above 1, 2 and 4 m/s^2 (4: the yield duty is violated) and above
@@ -33,16 +42,17 @@ import math
 import multiprocessing
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np  # noqa: E402
 
-from responsibility.forced_yield import forced_yield  # noqa: E402
+from responsibility.forced_yield import carry_priority, forced_yield, pair_priority  # noqa: E402
 from responsibility.scene import Scene, sidecar_index  # noqa: E402
 
 FIELDS = ["set", "scene", "agent", "other", "case", "kind", "holder", "demand", "entry", "forced", "demand_on_agent",
-          "error"]
+          "holder_own", "error"]
 BANDS = (1.0, 2.0, 4.0)  # m/s^2
 
 
@@ -52,12 +62,14 @@ def parse_args(argv=None):
     p.add_argument("--out-dir", required=True)
     p.add_argument("--reference", default=None, help="The set the threshold comes from (default: the first).")
     p.add_argument("--quantile", type=float, default=0.9)
+    p.add_argument("--own-priority", action="store_true",
+                   help="Judge rewritten scenes by their own right of way, not their log's.")
     p.add_argument("--workers", type=int, default=1)
     return p.parse_args(argv)
 
 
 def judge(job):
-    name, path, meta = job
+    name, path, meta, own = job
     row = {**{k: "" for k in FIELDS}, "set": name, "scene": path.stem}
     try:
         scene = Scene.load(path)
@@ -66,10 +78,22 @@ def judge(job):
         else:
             agent, other = scene.index(meta["adversary"]), scene.sdc
         row.update(agent=scene.track_ids[agent], other=scene.track_ids[other])
-        row.update(forced_yield(scene, agent, other).as_row())
+        mine = pair_priority(scene, agent, other)
+        log = log_scene(path, meta)
+        prio = mine if own or log is None else carry_priority(pair_priority(log, agent, other), scene, agent, other)
+        row.update(forced_yield(scene, agent, other, prio=prio).as_row())
+        if mine is not None:
+            row["holder_own"] = "none" if mine.holder is None else "agent" if mine.holder == agent else "other"
     except Exception as e:  # one malformed scene must not stop the run
         row["error"] = f"{type(e).__name__}: {e}"
     return row
+
+
+def log_scene(path: Path, meta) -> Optional[Scene]:
+    """The logged scene a rewritten one (make_go_first.py: "mode" in its
+    index) came from, or None."""
+    source = path.parent.parent / "log" / path.name
+    return Scene.load(source) if "mode" in meta and source.exists() else None
 
 
 def _value(x: str) -> float:
@@ -78,7 +102,8 @@ def _value(x: str) -> float:
 
 def summarize(rows, reference: str, quantile: float):
     """[(set, pairs, other holds, {band: share forced above}, share above
-    the reference quantile, ungated share above 2 m/s^2)], and that quantile."""
+    the reference quantile, ungated share above 2 m/s^2, entries, share of
+    pairs whose own right of way agrees)], and that quantile."""
     sets = list(dict.fromkeys(r["set"] for r in rows))
     ref = [_value(r["forced"]) for r in rows if r["set"] == reference and r["forced"] != ""]
     threshold = float(np.quantile(ref, quantile, method="higher")) if ref else math.nan
@@ -90,7 +115,8 @@ def summarize(rows, reference: str, quantile: float):
         share = {b: (sum(f > b for f in forced) / len(forced) if forced else math.nan) for b in BANDS}
         above = sum(f > threshold for f in forced) / len(forced) if forced else math.nan
         ungated = sum(d > 2.0 for d in demand) / len(demand) if demand else math.nan
-        out.append((name, len(rs), len(forced), share, above, ungated, len(demand)))
+        agree = sum(r["holder_own"] == r["holder"] for r in rs) / len(rs) if rs else math.nan
+        out.append((name, len(rs), len(forced), share, above, ungated, len(demand), agree))
     return out, threshold
 
 
@@ -98,13 +124,13 @@ def markdown(rows, reference: str, quantile: float) -> str:
     table, threshold = summarize(rows, reference, quantile)
     lines = [f"threshold: the {quantile:g} quantile of {reference}'s forced demands = {threshold:.2f} m/s^2", "",
              "| set | pairs | other holds, agent entered | forced > 1 | > 2 | > 4 (duty violated) "
-             f"| > threshold | ungated demand > 2 (of entries) |",
-             "|---|---|---|---|---|---|---|---|"]
-    for name, n, k, share, above, ungated, entries in table:
+             f"| > threshold | ungated demand > 2 (of entries) | own right of way agrees |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for name, n, k, share, above, ungated, entries, agree in table:
         def pct(x):
             return "–" if math.isnan(x) else f"{100 * x:.0f}%"
         lines.append(f"| {name} | {n} | {k} | {pct(share[1.0])} | {pct(share[2.0])} | {pct(share[4.0])} "
-                     f"| {pct(above)} | {pct(ungated)} ({entries}) |")
+                     f"| {pct(above)} | {pct(ungated)} ({entries}) | {pct(agree)} |")
     return "\n".join(lines)
 
 
@@ -116,7 +142,7 @@ def main(argv=None):
     for spec in args.sets:
         name, folder = spec.split("=", 1)
         index = json.loads(sidecar_index(folder).read_text())
-        jobs += [(name, Path(folder) / f"{key}.pkl", meta) for key, meta in index.items()
+        jobs += [(name, Path(folder) / f"{key}.pkl", meta, args.own_priority) for key, meta in index.items()
                  if (Path(folder) / f"{key}.pkl").exists()]
     rows = list(map(judge, jobs) if args.workers <= 1
                 else multiprocessing.Pool(args.workers).imap(judge, jobs, chunksize=4))
