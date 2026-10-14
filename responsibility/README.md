@@ -419,6 +419,134 @@ fits on log(1 + β_c), which tames courtesy's heavy tail. Outputs: `hmm.pkl`,
 `bic.json`, `levels.csv` (every window with its level and posterior),
 `scenes_levels.csv`, `levels.png` (scatter by level, BIC curve).
 
+## Can it judge aggression?
+
+The test is whether the framework above, given an agent and the neighbour
+it interacts with, tells after the fact whether the agent's logged driving
+was aggressive. CAT's adversaries collide with the ego by construction, so
+they are labelled aggressive without annotation. In every condition exactly
+one agent's trajectory differs from the log and everything else stays
+logged, so a change in its score can only come from that agent. All
+adversaries are DenseTNT's own candidates, chosen by different rules
+(`responsibility/aggression_test.py` holds the table):
+
+| condition | trajectory | expected |
+|---|---|---|
+| logged (adv, sdc) | the log | reference |
+| mode | the most probable non-colliding candidate (`near` 0 ± 1000 m) | as the log: negative control |
+| near 1 m < fair-inf < CAT | a 1 m miss; an avoidable collision (avoidability ≥ 0.5); CAT's rule | aggressive, graded |
+| max-gap | the candidate with the largest gap (`near` 30 m) | timid |
+| victim | the logged SDC in CAT's scene, unchanged | not aggressive: tests attribution |
+| SDC × 0.5 / 0.7 / 1.3 | the logged path re-timed (`retime_agent.py`) | dose-response |
+
+Scenes 0–99 of CAT's 500. Each condition is scored by AUROC against the
+same agent's logged drive (95% intervals from 2000 scene bootstraps).
+
+```bash
+CAT_SCENES=adv_scenes/cat bash scripts/responsibility/run_aggression_test.sh   # scenes, runs, offline tables
+python -m scripts.responsibility.evaluate_aggression --config paper --cat-scenes adv_scenes/cat \
+    --json logs/responsibility/validity/eval_paper.json                       # the paper's pipeline
+python -m scripts.responsibility.analyze_aggression_offline --config nms_ooi   # H, alpha, d_sat; two-sided score
+python -m scripts.responsibility.aggression_hmm_schemes                        # HMM vs thresholds
+python -m scripts.responsibility.probe_inertia --cat-scenes adv_scenes/cat     # mechanism probes
+python -m scripts.responsibility.probe_courtesy --cat-scenes adv_scenes/cat --out logs/responsibility/validity/courtesy_probe.csv
+python -m scripts.responsibility.plot_aggression --out-dir logs/responsibility/validity/figures ...
+```
+
+SMART runs the same conditions through `run_smart.sh` (one OUT per scene
+set) and `import_catk_obs.py`, which splits catk's observations into
+`runs/smart/<condition>/obs`; then `evaluate_aggression --config smart
+--frame-s 0.5`. `probe_smart.py` is the SMART version of the probes.
+
+**The paper's pipeline with DenseTNT (every 0.1 s, T_f = 2 s, 40 samples,
+CVaR α 0.1, max over neighbours, HMM with BIC over 3–11 levels, Eq. 6),
+sequence level:**
+
+| condition | max β_s, target pair | max β_s, paper | HMM verdict (stay) | max β_c |
+|---|---|---|---|---|
+| mode | 0.51 | 0.49 | 0.52 | 0.51 |
+| near 1 m | 0.78 | 0.66 | 0.63 | 0.55 |
+| fair-inf | 0.85 | 0.74 | 0.69 | 0.57 |
+| CAT | 0.93 [0.90, 0.96] | 0.85 | 0.72 [0.65, 0.78] | 0.56 |
+| victim | 0.88 | 0.81 | 0.67 | 0.56 |
+| max-gap (timid) | 0.36 | 0.58 | 0.53 | 0.48 |
+
+Against the criteria fixed before the test, the negative control and the
+grading pass, the rest fails. At 10% false alarms on logged drives the HMM
+verdict detects 15% of CAT's attackers. Attacker against victim is 0.59
+[0.51, 0.66] (criterion ≥ 0.8), and the timid side does not show (0.49 in
+the 61 scenes where the logged pair comes within 10 m). The signal is in
+β_s toward the partner and is lost downstream: in the maximum over
+unrelated neighbours, and in the HMM, whose Gaussian emissions fit the half
+of the frames with β_s exactly 0 badly, whose BIC picks 9 or 11 levels
+depending on the fold, and whose courtesy levels persist (stay probability
+0.77–0.93) longer than a 2–3 s attack.
+
+Why, measured:
+
+- **β_s is symmetric.** D_g is a shared distance, and CAT aims at the
+  victim's logged path, so any alternative of the victim widens the gap
+  too. β_s says the interaction was avoidable, not who caused it.
+- **Horizon and inertia.** CAT commits at step 10 and the median first
+  overlap is 4.3 s later, outside T_f = 2 s. Once the attack is in the
+  1.1 s of history, DenseTNT continues it: 0–1 s before the overlap, 61% of
+  the attacker's own alternatives also come within 3 m of the ego, and on
+  average they keep only 0.40 m more distance (`probe_inertia`).
+- **No reaction.** With the attacker 0.5 s from impact, DenseTNT's
+  prediction of the ego is unchanged by it (median progress change +0.07 m,
+  courtesy KL 0.061 against 0.042 nats in the log; higher in only 57–62% of
+  paired frames), so β_c carries no signal (`probe_courtesy`).
+- **Not the motion set.** Sampled and NMS sets give the same AUROC (0.94),
+  and the valid-counterfactual filters change the AUROC of every condition
+  by at most 0.012 (near 1 m 0.770 → 0.782).
+
+What helps, from the offline tables (`analyze_aggression_offline`,
+`aggression_hmm_schemes`; NMS set, target pair, 0.5 s windows):
+
+| change | effect |
+|---|---|
+| target pair instead of max over neighbours | CAT 0.80 → 0.94; logged false alarms 10% → 1.9% |
+| two-sided score rel = β_s(a→b) − β_s(b→a) | attacker vs victim 0.59 → 0.64 at 2 s; 0.77 → 0.89 at 5 s |
+| horizon 2 → 5 s | the attacker's alternatives keep 0.34 → 2.2 m more |
+| threshold at the logged q90 of rel (5 s) instead of the HMM | scenes flagged: logged 7–16%, CAT 59%, victim 10% |
+| three-level HMM on signed-log rel | attacker 0.90, but 39–50% of logged windows land in the aggressive level |
+
+The dose-response check agrees: re-timing only the SDC toward its partner
+raises its own maximum β_s by 1.50 m and the partner's by 0.47 m (2 s).
+
+**SMART (CAT-K, `clsft_E9`) instead of DenseTNT**, every 0.5 s, the same
+settings and evaluation (the adversaries still come from DenseTNT):
+
+| sequence AUROC vs logged | DenseTNT | SMART |
+|---|---|---|
+| CAT attacker, max β_s (paper) | 0.84 | 0.94 [0.90, 0.97] |
+| CAT attacker, max β_c | 0.55 | 0.81 [0.75, 0.86] |
+| CAT attacker, HMM verdict | 0.70 | 0.84 |
+| detected at 10% false alarms (max β_s) | 51% | 86% |
+| victim, max β_s | 0.81 | 0.84 |
+| attacker vs victim, max β_s | 0.59 | 0.69 [0.61, 0.76] |
+| mode (control), max β_s | 0.49 | 0.56 |
+
+SMART reacts to the attacker: it predicts the ego to hold back by 0.72 m
+(median) 0.5 s before the overlap, against +0.07 m for DenseTNT
+(`probe_smart`). β_c becomes informative and partly attributes (attacker
+0.81, victim 0.61). The price is about five times the compute (median 64 s
+per scene on an L4, 10 h for 500 scenes, against 2 h), catk's separate
+environment, thresholds to re-calibrate (SMART's β of CAT's adversaries is
+about a third of DenseTNT's), and its unexplained courtesy bias for the SDC
+(median 0.54 nats against 0.06 for adversaries), which inverts the HMM's
+attacker-vs-victim result (0.35) because the HMM is fitted on both agents.
+SMART draws all scenes' samples from one seeded random stream, so a run
+over a subset of the scenes gives other per-frame values (in
+`probe_smart --limit 3`, the progress change of one frame moved by 1.9 m);
+a run over the same scenes repeats exactly, and the medians over the 100
+scenes are what is reported. The fair-inf and max-gap conditions have not been run with
+SMART.
+
+Limits: 100 development scenes; the logged drives include some aggressive
+drivers, so the false-alarm rates are upper bounds; the DenseTNT results
+score adversaries that DenseTNT itself proposed.
+
 ## Responsibility-constrained adversarial generation
 
 CAT picks, among DenseTNT's 32 trajectories for the adversary, the one
