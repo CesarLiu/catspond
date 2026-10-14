@@ -15,6 +15,7 @@ A fork of CAT (Closed-loop Adversarial Training, CoRL 2023): TD3 driving policie
 - `responsibility/RESEARCH_PLAN.md`: milestones M1–M3, each with a **状态** (status) block;
 - `responsibility/RUNBOOK_H200.md`: the exact server commands, steps 0–11;
 - `responsibility/UNITRAJ_PLAN.md`: the UniTraj MTR integration, milestones U0–U5.
+- `responsibility/CATK_H200.md`: running the CAT-K / SMART experiments on another server (what to pack, environments, commands).
 
 When you finish a milestone, update its status block and the README in the same commit, including any measured numbers.
 

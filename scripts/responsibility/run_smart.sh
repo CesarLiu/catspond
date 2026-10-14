@@ -20,6 +20,7 @@
 #   PYTHON      catk's Python                                         ($HOME/venvs/catk/bin/python)
 #   CKPT        SMART checkpoint                                      ($CATK_ROOT/ckpts/clsft_E9.ckpt)
 #   SCENES      CAT's scenes                                          (raw_scenes_500)
+#   FIRST, N    export only scene files FIRST .. FIRST+N-1 of SCENES   (0, all)
 #   ROLLOUTS    a rollout directory: measure the scenes rebuilt from it instead ("")
 #   OUT         output root: OUT/cache (exported scenes), OUT/run (catk results)  (logs/catk/scenes)
 #   SHARDS      processes (each with its own GPU batches)              (1)
@@ -34,6 +35,8 @@ CATK_ROOT=${CATK_ROOT:-$HOME/catk}
 PYTHON=${PYTHON:-$HOME/venvs/catk/bin/python}
 CKPT=${CKPT:-$CATK_ROOT/ckpts/clsft_E9.ckpt}
 SCENES=${SCENES:-raw_scenes_500}
+FIRST=${FIRST:-0}
+N=${N:-}
 ROLLOUTS=${ROLLOUTS:-}
 OUT=${OUT:-logs/catk/scenes}
 SHARDS=${SHARDS:-1}
@@ -49,6 +52,7 @@ if [ "$EXPORT" = 1 ]; then
   echo "$(date '+%m-%d %H:%M') export to $out/cache"
   src=(--scenes "$SCENES")
   [ -n "$ROLLOUTS" ] && src+=(--rollouts "$ROLLOUTS")
+  [ -z "$ROLLOUTS" ] && [ -n "$N" ] && src+=(--first "$FIRST" --n "$N")
   "$PYTHON" -m scripts.responsibility.export_catk --catk-root "$CATK_ROOT" "${src[@]}" --out-dir "$out" \
     > "$out/logs/export.log" 2>&1
   tail -n 1 "$out/logs/export.log"

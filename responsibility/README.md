@@ -1322,6 +1322,9 @@ the penalty; doubt and failed attributions keep all of it).
 
 ## Does the verdict depend on the motion model? (SMART)
 
+To run these SMART experiments on another server, see [CATK_H200.md](CATK_H200.md) (in Chinese):
+what to pack (`pack_catk_h200.sh`), the two environments, and every experiment's commands.
+
 `scripts/responsibility/run_smart.sh` measures CAT's scenes with CAT-K's SMART
 (the `clsft_E9` checkpoint) through catk's own pipeline (`responsibility/SMART_PLAN.md`):
 `export_catk.py` writes catk's cache, catk's `compute_responsibility` runs with
