@@ -44,13 +44,19 @@ decided by the first rule that applies:
 
     following         the two were on one path from the start (one behind
                       the other): rear-end territory, no priority
-    approach headings within SAME_DIRECTION (one road; signals and signs
-    do not part them):
+    same-direction    approach headings within SAME_DIRECTION (one road):
+                      no priority and no verdict; RSS (responsibility/rss.py)
+                      judges these (cut-in, side-swipe). With
+                      ``same_direction_rules`` they get a holder instead:
       lane-change       one moved into the other's lane from a neighbouring
                         lane: it yields (21658(a))
       merge             paths converging from different lanes: the first
                         on the lane they share goes first
-      same-direction    otherwise: no priority (RSS's lateral case)
+                      They are off by default: on held-out WOMD pairs the
+                      lane-change holder passed first in only 38% of 85, and
+                      the yield duty, whose conflict zone assumes crossing
+                      paths, failed for 56% of logged lane-change yielders
+                      and 52% of merging ones (below)
     driveway          one comes from off the mapped lanes (a driveway, a car
                       park): it yields to the one on the road (21804(a))
     oncoming          both go straight from opposite directions: passing
@@ -117,7 +123,8 @@ both are seen, every predicate a signed distance in metres:
                   lawfully within the intersection), right of way or not
 
 The yielder owes yield and avoid, the holder avoid; without a holder both
-owe avoid only. An agent inside the zone when the two are first seen
+owe avoid only (between same-direction paths neither duty is judged
+unless ``same_direction_rules``). An agent inside the zone when the two are first seen
 entered it before then: its entry is not judged. A violated duty (negative
 robustness) puts the collision on that agent: "ego", "other", "shared" when
 both failed, "n/a" when neither did (".../no-violation"; e.g. a yielder
@@ -131,17 +138,25 @@ Checked on CAT's 500 logged scenes, the self-driving car against the other
 object of interest at their closest approach (logged drivers mostly keep
 the right of way, so its holder should usually pass P* first): of 220
 pairs whose paths cross or merge and where one passed P* at least 0.5 s
-before the other, 118 get a holder, and the holder passed first in 87%
+before the other, 113 get a holder, and the holder passed first in 89%
 (stop-sign 94% of 49, through-road 68% of 19, all-way-stop/first-in 100%
 of 16, driveway 100% of 10, red-light 88% of 8, left-turn 100% of 7).
 Most disagreements are a yielder that went first lawfully, the holder
 still far away; the rest are left without a holder (signal-unknown 38,
-uncontrolled 23, all-way-stop/order-unknown 17, same-direction 15,
-oncoming 9). On those logged pairs the yield duty fails for 3% of the
-yielders (4 of 117 where one entered the zone): the false-alarm rate of
+uncontrolled 23, same-direction 20, all-way-stop/order-unknown 17,
+oncoming 9). On those logged pairs the yield duty fails for 2% of the
+yielders (2 of 112 where one entered the zone): the false-alarm rate of
 the duties on lawful driving. It fails as rarely for the holders, had they
-been the yielders (4%): logged conflicts are seldom close enough for the
-duty to tell the two apart, so this checks the duties, not the priority.
+been the yielders (4 of 112): logged conflicts are seldom close enough for
+the duty to tell the two apart, so this checks the duties, not the
+priority. These scenes were the development set. Held out, on 3119 pairs
+of WOMD's validation_interactive split (the two objects of interest;
+scripts/responsibility/validate_right_of_way.py), the holder passed first
+in 83% of 330 (stop-sign 92% of 130, driveway 74% of 62, through-road 85%
+of 40, all-way-stop/first-in 91% of 35, left-turn 64% of 28, red-light
+87% of 23) and the yield duty failed for 7 of 323 yielders (2%); with
+``same_direction_rules`` the lane-change holder passed first in 38% of 85
+and the duty failed for 51 of 91 lane-change and 32 of 61 merging yielders.
 
 Approximations: WOMD has no yield signs, so a yield-controlled approach
 counts as uncontrolled; roundabouts and lane drops have no rule of their
@@ -193,6 +208,7 @@ class RightOfWayParams:
     signal_radius: float = 40.0  # m: lights this close to P* make it a signalised intersection
     arrive: float = 5.0  # m before its stop line where an agent has arrived at an all-way stop
     uncontrolled_order: bool = False  # first-in and yield-right where the map shows no control (21800(a), (b))
+    same_direction_rules: bool = False  # lane-change and merge priorities, and duties, between same-direction paths
 
 
 @dataclass
@@ -529,6 +545,8 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
 
     rel = float(_angle(b.heading - a.heading))  # > 0: b comes from a's right (heads to a's left)
     if abs(rel) < SAME_DIRECTION:  # one road: signals and signs do not part them
+        if not p.same_direction_rules:
+            return None, "same-direction"
         if a.changed_lane != b.changed_lane:
             return ("b" if a.changed_lane else "a"), "lane-change"
         holder = first(a.entered, b.entered) if merge else None
@@ -591,10 +609,13 @@ def _window(scene: Scene, a: int, b: int, at: int) -> np.ndarray:
     return np.arange(first, last + 1)
 
 
-def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayParams] = None) -> Priority:
+def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayParams] = None,
+             conflict: Optional[Conflict] = None) -> Priority:
     """Who of ``a`` and ``b`` had the right of way at the conflict their
     paths up to step ``at`` lead to (e.g. a collision, or their closest
-    approach)."""
+    approach). A given ``conflict`` (its arc lengths along each agent's
+    track from its first seen step) is judged instead of the one found
+    from the paths up to ``at``."""
     p = params or RightOfWayParams()
     steps = _window(scene, a, b, at)
     if steps.size == 0:
@@ -605,7 +626,7 @@ def priority(scene: Scene, a: int, b: int, at: int, params: Optional[RightOfWayP
     pa, pb = _Path(scene, a, last, p.extend), _Path(scene, b, last, p.extend)
     before = steps[-2] if last == at else last  # where they were before contact
     ref = (scene.position[a, before, :2] + scene.position[b, before, :2]).astype(float) / 2
-    conflict = find_conflict(pa, pb, ref, p)
+    conflict = conflict or find_conflict(pa, pb, ref, p)
     if conflict is None:
         return Priority(None, "no-conflict")
     if _following(scene, a, b, int(steps[0]), pa, pb, p):
@@ -657,7 +678,7 @@ def right_of_way_blame(scene: Scene, ego: int, other: int, crash_step: int,
     p = params or RightOfWayParams()
     prio = priority(scene, ego, other, crash_step, p)
     holder = "none" if prio.holder is None else "ego" if prio.holder == ego else "other"
-    if prio.approaches is None:  # no conflict to judge
+    if prio.approaches is None or (prio.case == "same-direction" and not p.same_direction_rules):  # or RSS's
         return RightOfWay("n/a", prio.case, holder)
     steps = _window(scene, ego, other, crash_step)
     c = prio.conflict

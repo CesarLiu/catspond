@@ -223,6 +223,99 @@ To evaluate a trajectory produced in simulation instead of the log (e.g. the
 ego of a CAT-trained policy), replace the agent's track before computing:
 `Scene.with_track(agent, positions, headings, velocities)` over the 91 steps.
 
+### Forced yields: assertive without being unsafe
+
+β_s and the right of way's yield duty both read the unsafe end. A driver
+who takes the right of way from someone still far enough away to stop
+registers in neither. `responsibility/forced_yield.py` measures it, open
+loop, for a pair (the agent and another road user):
+
+- the conflict point, the conflict zones and the holder of the right of way
+  come from `right_of_way.py`;
+- at each step the agent enters its zone, it computes the braking demanded
+  of the other, `a_req = v² / (2 (d − v ρ))`. Here d is the other's distance
+  to its own zone, v its speed and ρ = 1 s;
+- the result is `forced`, the worst entry's a_req, counted only when the
+  other held the right of way.
+
+Above 4 m/s² (RSS's brake_min) the yield duty is violated. Below that,
+a_req grades how hard the agent made a holder brake that still could.
+
+The ground truth (`scripts/responsibility/make_go_first.py`) rewrites logged
+pairs in which the yielder let the holder pass first, so that the yielder
+goes first: it leaves its zone a post-encroachment time (PET) before the
+holder enters. The pairs come from `validate_right_of_way`'s `pairs.csv`.
+Two rewrites are made:
+
+- `delay` shifts the holder's whole track later. The yielder keeps its
+  lawful, logged motion, so its kinematics alone cannot tell the rewrite
+  apart. Only rules whose priority does not depend on time are rewritten:
+  stop-sign, driveway, through-road and left-turn, with no traffic light.
+- `retime` re-times the yielder along its own path, at ≤ 3 m/s² and
+  ≤ 15 m/s.
+
+The holder enters the conflict about 4 s into the 9.1 s clip, so `retime`
+rarely fits and PET 4 s hardly ever does. Logged pairs in which the yielder
+went first anyway (`log_yielder_first`) carry no label. They are the
+reference for the threshold: the braking that drivers who take a gap leave
+to the holder.
+
+Open loop the whole tracks are known, so the conflict point is the first
+crossing of the two tracks (`track_conflict`), judged at the step the later
+of the two reaches it. Before, P* came from the paths up to the closest
+approach, extended 15 m straight on, as for a collision; P* then moved
+with the timing, and a rewrite was judged at a different point than its
+log. Tracks that do not cross are judged at their closest approach. A
+rewrite keeps the paths, so it keeps P*.
+
+`evaluate_forced_yield` judges a rewritten scene with its log's right of
+way, moved onto the rewritten tracks (`carry_priority`). The rewrite keeps
+the map and, for the rules it is made for, the priority, so the ground
+truth tests the braking demand alone; `validate_right_of_way` checks the
+right of way. The rewritten scene's own reading agrees in about 80% of
+pairs. It differs where the delayed holder's straight run-up, which the
+right of way reads as its approach, crosses other lanes, or where a car
+leaving a driveway is matched to the road at P*. `--own-priority` judges
+each scene by its own reading.
+
+```bash
+python -m scripts.responsibility.make_go_first --pairs logs/responsibility/right_of_way/validation_interactive/pairs.csv \
+    --out-dir logs/responsibility/forced_yield/scenes --pet 1 2 4 --workers 4
+S=logs/responsibility/forced_yield/scenes
+python -m scripts.responsibility.evaluate_forced_yield --out-dir logs/responsibility/forced_yield/eval \
+    --sets log=$S/log delay_pet2=$S/delay_pet2 delay_pet1=$S/delay_pet1 retime_pet1=$S/retime_pet1 \
+           natural=$S/log_yielder_first --reference natural --workers 4
+python -m scripts.responsibility.visualize_forced_yield --scenes $S --sets delay_pet2 delay_pet1 log_yielder_first \
+    --out-dir logs/responsibility/forced_yield/figures      # index.md: a gallery sorted by the demand; --gif animates
+```
+
+The figures put the log next to the rewrite. Each map shows both tracks,
+with a dot every second, P*, the conflict zones, and the footprints at the
+agent's worst entry. A time–distance panel shows each agent's distance to
+P* against time.
+
+Held-out WOMD (the 14 local shards above, 2026-10-10) gives 242 lawful
+pairs. The threshold is the 0.9 quantile of the 42 logged go-first pairs,
+1.53 m/s²:
+
+| set | pairs | other holds, agent entered | forced > 1 m/s² | > 2 | > 4 (duty violated) | > 1.53 |
+|---|---|---|---|---|---|---|
+| logged, holder first | 242 | 209 | 3% | 3% | 3% | 3% |
+| logged, yielder first (reference) | 42 | 31 | 35% | 3% | 0% | 10% |
+| delay, PET 4 s | 2 | 2 | 100% | 0% | 0% | 50% |
+| delay, PET 2 s | 18 | 18 | 89% | 56% | 6% | 83% |
+| delay, PET 1 s | 47 | 47 | 98% | 79% | 28% | 87% |
+| retime, PET 1 s | 4 | 4 | 75% | 75% | 25% | 75% |
+
+At PET 2 s the yield duty flags 1 of the 18 rewritten pairs. That pair is
+a left turn whose measured PET is 1.3 s: after a merge the two paths
+coincide, so the zone ends where it was estimated only roughly. a_req flags
+83% of the rewritten pairs, against 3% of the lawful ones and 10% of the
+logged gap-takers. Few pairs survive the rewrite: of 242 lawful pairs, 48
+are under time-dependent rules or at lights, 46 have a yielder that never
+leaves its zone in the clip, and 41 have no holder at the first track
+crossing. At PET 2 s, 85 more would put the holder's entry past the clip.
+
 ## Visualisation
 
 ```bash
@@ -325,6 +418,134 @@ windows per level (printed, and in `scenes_levels.csv`). `--log-courtesy`
 fits on log(1 + β_c), which tames courtesy's heavy tail. Outputs: `hmm.pkl`,
 `bic.json`, `levels.csv` (every window with its level and posterior),
 `scenes_levels.csv`, `levels.png` (scatter by level, BIC curve).
+
+## Can it judge aggression?
+
+The test is whether the framework above, given an agent and the neighbour
+it interacts with, tells after the fact whether the agent's logged driving
+was aggressive. CAT's adversaries collide with the ego by construction, so
+they are labelled aggressive without annotation. In every condition exactly
+one agent's trajectory differs from the log and everything else stays
+logged, so a change in its score can only come from that agent. All
+adversaries are DenseTNT's own candidates, chosen by different rules
+(`responsibility/aggression_test.py` holds the table):
+
+| condition | trajectory | expected |
+|---|---|---|
+| logged (adv, sdc) | the log | reference |
+| mode | the most probable non-colliding candidate (`near` 0 ± 1000 m) | as the log: negative control |
+| near 1 m < fair-inf < CAT | a 1 m miss; an avoidable collision (avoidability ≥ 0.5); CAT's rule | aggressive, graded |
+| max-gap | the candidate with the largest gap (`near` 30 m) | timid |
+| victim | the logged SDC in CAT's scene, unchanged | not aggressive: tests attribution |
+| SDC × 0.5 / 0.7 / 1.3 | the logged path re-timed (`retime_agent.py`) | dose-response |
+
+Scenes 0–99 of CAT's 500. Each condition is scored by AUROC against the
+same agent's logged drive (95% intervals from 2000 scene bootstraps).
+
+```bash
+CAT_SCENES=adv_scenes/cat bash scripts/responsibility/run_aggression_test.sh   # scenes, runs, offline tables
+python -m scripts.responsibility.evaluate_aggression --config paper --cat-scenes adv_scenes/cat \
+    --json logs/responsibility/validity/eval_paper.json                       # the paper's pipeline
+python -m scripts.responsibility.analyze_aggression_offline --config nms_ooi   # H, alpha, d_sat; two-sided score
+python -m scripts.responsibility.aggression_hmm_schemes                        # HMM vs thresholds
+python -m scripts.responsibility.probe_inertia --cat-scenes adv_scenes/cat     # mechanism probes
+python -m scripts.responsibility.probe_courtesy --cat-scenes adv_scenes/cat --out logs/responsibility/validity/courtesy_probe.csv
+python -m scripts.responsibility.plot_aggression --out-dir logs/responsibility/validity/figures ...
+```
+
+SMART runs the same conditions through `run_smart.sh` (one OUT per scene
+set) and `import_catk_obs.py`, which splits catk's observations into
+`runs/smart/<condition>/obs`; then `evaluate_aggression --config smart
+--frame-s 0.5`. `probe_smart.py` is the SMART version of the probes.
+
+**The paper's pipeline with DenseTNT (every 0.1 s, T_f = 2 s, 40 samples,
+CVaR α 0.1, max over neighbours, HMM with BIC over 3–11 levels, Eq. 6),
+sequence level:**
+
+| condition | max β_s, target pair | max β_s, paper | HMM verdict (stay) | max β_c |
+|---|---|---|---|---|
+| mode | 0.51 | 0.49 | 0.52 | 0.51 |
+| near 1 m | 0.78 | 0.66 | 0.63 | 0.55 |
+| fair-inf | 0.85 | 0.74 | 0.69 | 0.57 |
+| CAT | 0.93 [0.90, 0.96] | 0.85 | 0.72 [0.65, 0.78] | 0.56 |
+| victim | 0.88 | 0.81 | 0.67 | 0.56 |
+| max-gap (timid) | 0.36 | 0.58 | 0.53 | 0.48 |
+
+Against the criteria fixed before the test, the negative control and the
+grading pass, the rest fails. At 10% false alarms on logged drives the HMM
+verdict detects 15% of CAT's attackers. Attacker against victim is 0.59
+[0.51, 0.66] (criterion ≥ 0.8), and the timid side does not show (0.49 in
+the 61 scenes where the logged pair comes within 10 m). The signal is in
+β_s toward the partner and is lost downstream: in the maximum over
+unrelated neighbours, and in the HMM, whose Gaussian emissions fit the half
+of the frames with β_s exactly 0 badly, whose BIC picks 9 or 11 levels
+depending on the fold, and whose courtesy levels persist (stay probability
+0.77–0.93) longer than a 2–3 s attack.
+
+Why, measured:
+
+- **β_s is symmetric.** D_g is a shared distance, and CAT aims at the
+  victim's logged path, so any alternative of the victim widens the gap
+  too. β_s says the interaction was avoidable, not who caused it.
+- **Horizon and inertia.** CAT commits at step 10 and the median first
+  overlap is 4.3 s later, outside T_f = 2 s. Once the attack is in the
+  1.1 s of history, DenseTNT continues it: 0–1 s before the overlap, 61% of
+  the attacker's own alternatives also come within 3 m of the ego, and on
+  average they keep only 0.40 m more distance (`probe_inertia`).
+- **No reaction.** With the attacker 0.5 s from impact, DenseTNT's
+  prediction of the ego is unchanged by it (median progress change +0.07 m,
+  courtesy KL 0.061 against 0.042 nats in the log; higher in only 57–62% of
+  paired frames), so β_c carries no signal (`probe_courtesy`).
+- **Not the motion set.** Sampled and NMS sets give the same AUROC (0.94),
+  and the valid-counterfactual filters change the AUROC of every condition
+  by at most 0.012 (near 1 m 0.770 → 0.782).
+
+What helps, from the offline tables (`analyze_aggression_offline`,
+`aggression_hmm_schemes`; NMS set, target pair, 0.5 s windows):
+
+| change | effect |
+|---|---|
+| target pair instead of max over neighbours | CAT 0.80 → 0.94; logged false alarms 10% → 1.9% |
+| two-sided score rel = β_s(a→b) − β_s(b→a) | attacker vs victim 0.59 → 0.64 at 2 s; 0.77 → 0.89 at 5 s |
+| horizon 2 → 5 s | the attacker's alternatives keep 0.34 → 2.2 m more |
+| threshold at the logged q90 of rel (5 s) instead of the HMM | scenes flagged: logged 7–16%, CAT 59%, victim 10% |
+| three-level HMM on signed-log rel | attacker 0.90, but 39–50% of logged windows land in the aggressive level |
+
+The dose-response check agrees: re-timing only the SDC toward its partner
+raises its own maximum β_s by 1.50 m and the partner's by 0.47 m (2 s).
+
+**SMART (CAT-K, `clsft_E9`) instead of DenseTNT**, every 0.5 s, the same
+settings and evaluation (the adversaries still come from DenseTNT):
+
+| sequence AUROC vs logged | DenseTNT | SMART |
+|---|---|---|
+| CAT attacker, max β_s (paper) | 0.84 | 0.94 [0.90, 0.97] |
+| CAT attacker, max β_c | 0.55 | 0.81 [0.75, 0.86] |
+| CAT attacker, HMM verdict | 0.70 | 0.84 |
+| detected at 10% false alarms (max β_s) | 51% | 86% |
+| victim, max β_s | 0.81 | 0.84 |
+| attacker vs victim, max β_s | 0.59 | 0.69 [0.61, 0.76] |
+| mode (control), max β_s | 0.49 | 0.56 |
+
+SMART reacts to the attacker: it predicts the ego to hold back by 0.72 m
+(median) 0.5 s before the overlap, against +0.07 m for DenseTNT
+(`probe_smart`). β_c becomes informative and partly attributes (attacker
+0.81, victim 0.61). The price is about five times the compute (median 64 s
+per scene on an L4, 10 h for 500 scenes, against 2 h), catk's separate
+environment, thresholds to re-calibrate (SMART's β of CAT's adversaries is
+about a third of DenseTNT's), and its unexplained courtesy bias for the SDC
+(median 0.54 nats against 0.06 for adversaries), which inverts the HMM's
+attacker-vs-victim result (0.35) because the HMM is fitted on both agents.
+SMART draws all scenes' samples from one seeded random stream, so a run
+over a subset of the scenes gives other per-frame values (in
+`probe_smart --limit 3`, the progress change of one frame moved by 1.9 m);
+a run over the same scenes repeats exactly, and the medians over the 100
+scenes are what is reported. The fair-inf and max-gap conditions have not been run with
+SMART.
+
+Limits: 100 development scenes; the logged drives include some aggressive
+drivers, so the false-alarm rates are upper bounds; the DenseTNT results
+score adversaries that DenseTNT itself proposed.
 
 ## Responsibility-constrained adversarial generation
 
@@ -729,7 +950,8 @@ crossing ones need right-of-way rules from the lane graph, so they get
 The **right of way** (`responsibility/right_of_way.py`, columns
 `right_of_way`, `right_of_way_case`, `priority`) is the traffic-law
 baseline for those: collisions between different paths (crossing, turning
-across, merging, changing lanes). WOMD was recorded in US cities, so the
+across, entering a road). Same-direction conflicts (cut-ins, lane changes,
+merges into one lane) are left to RSS. WOMD was recorded in US cities, so the
 rules are the California Vehicle Code's. Everything is read from the
 `Scene` (trajectories, lane graph, traffic-light states, stop signs), so
 logged scenes and rollouts are judged alike, without MetaDrive.
@@ -741,11 +963,14 @@ logged scenes and rollouts are judged alike, without MetaDrive.
    control is the light of the intersection lane it entered, in the state
    it showed at the stop line (WOMD lights and stop signs control the lane
    that starts at the stop line), or a stop sign. The first rule that
-   applies names the holder: red-light (21453), lane-change (21658),
-   driveway (21804), protected-arrow, left-turn (21801), first-in at a green
-   light or by arrival at an all-way stop, stop-sign (21802), through-road at
-   a T junction (21800(c)). With no rule the case says why: signal-unknown,
-   uncontrolled, oncoming, same-direction, following.
+   applies names the holder: red-light (21453), driveway (21804),
+   protected-arrow, left-turn (21801), first-in at a green light or by
+   arrival at an all-way stop, stop-sign (21802), through-road at a T
+   junction (21800(c)). With no rule the case says why: signal-unknown,
+   uncontrolled, oncoming, same-direction, following. Same-direction pairs
+   (approach headings within 45°) get neither a holder nor a verdict; the
+   lane-change (21658) and merge rules behind `same_direction_rules` failed
+   the held-out check (below).
 3. **Duties**, as Signal Temporal Logic over the steps both are seen
    (`responsibility/stl.py`, robustness in metres):
    - `yield(y, p) = G(enters(y) → cleared(p) ∨ can_stop(p))`: the yielder
@@ -767,7 +992,7 @@ Checked on CAT's 500 logged scenes: for the self-driving car and the other
 object of interest at their closest approach, logged drivers mostly keep
 the right of way, so the holder should usually pass P* first. Of 220 pairs
 whose paths cross or merge and where one passed at least 0.5 s before the
-other, 118 get a holder, and it passed first in 87%:
+other, 113 get a holder, and it passed first in 89% (101; 95% CI 82–94%):
 
 | rule | pairs | holder passed first |
 |---|---|---|
@@ -779,22 +1004,25 @@ other, 118 get a holder, and it passed first in 87%:
 | left-turn | 7 | 100% |
 
 Most disagreements are a yielder that went first lawfully while the holder
-was still far away. The other 102 pairs get no holder: signal-unknown 38
-(no state for that light), uncontrolled 23, all-way-stop/order-unknown 17
-(both waiting when the clip began), same-direction 15, oncoming 9. The
+was still far away. The other 107 pairs get no holder: signal-unknown 38
+(no state for that light), uncontrolled 23, same-direction 20,
+all-way-stop/order-unknown 17 (both waiting when the clip began), oncoming
+9. The
 CVC's order for uncontrolled intersections (first-in, then yield to the
 right, 21800(a)/(b)) is off by default (`uncontrolled_order`): the map shows
 no control there, but in reality such junctions mostly have signs or lights
 WOMD lacks, and the holder it names passed first in only 40% (15 pairs) and
-25% (8 pairs). On the logged pairs the yield duty fails for 3% of the
-yielders, the duties' false-alarm rate on lawful driving.
+25% (8 pairs). On the logged pairs the yield duty fails for 2 of 112
+yielders (2%), the duties' false-alarm rate on lawful driving.
 
 These 500 scenes were the development set: the driveway, through-road,
 oncoming and all-way-stop rules were added after looking at their
 disagreements. The held-out check runs over the rest of WOMD's
 validation_interactive split (converted by `convert_womd_split`, below), with the two
-objects of interest as the pair. It also evaluates the CVC's uncontrolled
-order on the pairs left "uncontrolled", in the same pass:
+objects of interest as the pair. In the same pass it also evaluates the
+rules that are off by default: the CVC's uncontrolled order on the pairs
+left "uncontrolled", and the same-direction rules on the pairs left
+"same-direction":
 
 ```bash
 python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/cat_format/validation_interactive/scenes \
@@ -803,9 +1031,40 @@ python -m scripts.responsibility.validate_right_of_way --scenes ~/womd_v1_2_1/ca
 ```
 
 It writes `pairs.csv` (one row per scene; a re-run resumes) and
-`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval). On
-CAT's scenes (`--scenes raw_scenes_500 --pair sdc`) it reproduces the
-numbers above (103 of 118, 95% CI 80–92%) in 48 s on 8 processes.
+`summary.md` (per rule: pairs, holder-first rate, 95% Wilson interval, and
+how often logged yielders kept the yield duty). On CAT's scenes
+(`--scenes raw_scenes_500 --pair sdc`) it reproduces the numbers above in
+48 s on 8 processes.
+
+Held out (2026-10-10): the 14 of 150 shards of validation_interactive on
+the L4 machine, 3166 scenes, 47 of them CAT's and excluded. Of 1091 pairs
+whose paths cross or merge with a passing order, 330 get a holder, and it
+passed first in **83%** (275; 95% CI 79–87%), against 89% on the
+development set. Logged yielders kept the yield duty in 316 of 323 (2%
+false alarms).
+
+| rule | pairs with a holder and an order | holder passed first | yield duty kept |
+|---|---|---|---|
+| stop-sign | 130 | 92% | 123 of 127 |
+| driveway | 62 | 74% | 61 of 61 |
+| through-road | 40 | 85% | 38 of 39 |
+| all-way-stop/first-in | 35 | 91% | 35 of 35 |
+| left-turn | 28 | 64% | 26 of 28 |
+| red-light | 23 | 87% | 23 of 23 |
+| all-way-stop/yield-right | 11 | 36% | 9 of 9 |
+| *same-direction rules:* lane-change | 85 | 38% | 40 of 91 |
+| *same-direction rules:* merge | 68 | 97% | 29 of 61 |
+
+The same-direction rules fail there. A lane changer usually goes first,
+lawfully, into a gap it judged safe, so "the one not changing lanes goes
+first" does not hold (38%); and the conflict zone of the duties assumes
+crossing paths, so the yield duty fails for 56% of logged lane-change and
+52% of merging yielders. They are off by default (`same_direction_rules`);
+RSS's lateral and longitudinal checks cover those conflicts. The CVC's
+uncontrolled order stays off as well (first-in 59% of 51, yield-right 32%
+of 22). The pairs without a holder are same-direction 352, signal-unknown
+235, uncontrolled 73, all-way-stop/order-unknown 67, oncoming 32, plus 612
+following one another.
 
 `compute_responsibility --rollouts` writes these columns with every
 collision. To add them to the crash files of a finished run, which a re-run
@@ -1452,6 +1711,12 @@ and raise `SHARDS` if the GPU and CPUs are not busy. Variables: `OUT`,
   agent's influence enters only through its recent past and current state.
 - Thresholds are relative to a reference population; the verdict is "unusual
   compared with that driving", not an absolute safety judgement.
+- The right of way names a holder for only 30% of the held-out pairs whose
+  paths cross or merge (330 of 1091): same-direction pairs are RSS's, and
+  lights without a recorded state, junctions the map shows no control for
+  and all-way stops both entered before the clip began get none. Forced
+  yields (above) are measured only where it names one, and its reading of
+  the rule can change with the step the conflict is judged at.
 - Over the 2 s metric horizon, the alternatives stay close to the logged
   future: DenseTNT's median ADE is 0.26 m. They continue a deceleration that
   has begun, but rarely anticipate one that has not (see "Reactions" above).

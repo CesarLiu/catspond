@@ -235,8 +235,11 @@ def test_lane_change_into_a_close_follower():
     other = track((15, -1.75), (15, 0))  # x = 1.5 t
     scene = make_scene({"0": ego, "1": other}, map_features=_two_lanes(), lights={})
     crash = _first_contact(scene)
-    row = right_of_way_blame(scene, 0, 1, crash)
+    row = right_of_way_blame(scene, 0, 1, crash, RightOfWayParams(same_direction_rules=True))
     assert (row.priority, row.case, row.verdict) == ("other", "lane-change", "ego")
+    # by default same-direction conflicts are RSS's: no priority, no verdict
+    row = right_of_way_blame(scene, 0, 1, crash)
+    assert (row.priority, row.case, row.verdict) == ("none", "same-direction", "n/a")
 
 
 def test_following_is_left_to_the_rear_end_rule():

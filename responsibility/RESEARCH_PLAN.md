@@ -74,6 +74,19 @@
 - 对手模式：`none` 和 `cat`。
 - **产出：** 第一张结论表，例如"CAT 训练降低了碰撞率，但胆怯窗口占比比人类高 X 倍"。这张表本身就是方向 3 的主要贡献。
 
+### M3.5 激进但不危险：强迫路权方让行（开环）
+> **状态：** 已完成第一版（2026-10-10）。`responsibility/forced_yield.py`：agent 进入冲突区的每一步，路权方要在冲突区前停下所需的减速度 a_req = v²/(2(d − vρ))，ρ = 1 s；只在对方持有路权时计入（`forced`）。a_req > 4 m/s² 等价于违反 yield 义务，2–4 m/s² 是"逼人让行但还安全"的区间。Ground truth 由 `make_go_first.py` 构造：从 logged 合法让行的对出发，把路权方整体推迟（`delay`），或把让行方沿原路径重新定时（`retime`），使让行方在路权方进入冲突区前 PET 秒离开。评估用 `evaluate_forced_yield.py`。冲突点取两条完整轨迹的第一个交点（改写只动时间、不动路径，所以 P* 不变）；改写场景沿用其 log 场景的路权判定（`carry_priority`），路权本身由 `validate_right_of_way` 单独验证。`visualize_forced_yield.py` 出图（log 与改写并排，加时间–距离图），供人工核对。在 held-out WOMD（本地 14 个分片）上，阈值取 logged 先行者 forced 的 0.9 分位数（1.53 m/s²）：logged 合法让行 3% 超阈值，logged 先行者 10%，`delay` PET 2 s 83%（18 对，其中违反 yield 义务的 1 对），PET 1 s 87%（47 对）。同一轮把 `right_of_way.py` 的同向规则（lane-change、merge）默认关闭：held-out 上 lane-change 的路权方先过只有 38%，同向冲突的 yield 义务对 logged 让行方误报 52–56%；交叉类规则路权方先过 83%（开发集 89%），义务误报 2%。
+- 局限：只有 30% 的交叉/汇入对能定出路权方；改写后能保留的对很少（242 对合法让行里，PET 2 s 只剩 18 对），因为 WOMD 片段只有 9.1 s；改写场景自己重判路权时，约 80% 与 log 一致（推迟的路权方补出的直线来路会被读成它的进口道）。
+- 下一步：在同样的场景集上跑 β_s / β_c（DenseTNT），检验 a_req 是否抓到了 β 抓不到的激进。
+
+### M3.6 框架能否判断激进（开环、事后）：以 CAT 对抗场景为标签的干预式检验
+> **状态：** 已完成 DenseTNT 部分和 SMART 的 CAT / mode / near 1 m 条件（2026-10-10 至 10-12，CAT 的 0–99 号场景），README "Can it judge aggression?" 有完整表格。脚本整理进 `scripts/responsibility/`（2026-10-14）：`run_aggression_test.sh`（条件场景、运行、离线表）、`evaluate_aggression.py`（论文流程）、`analyze_aggression_offline.py`、`aggression_hmm_schemes.py`、`probe_inertia.py` / `probe_courtesy.py` / `probe_smart.py`、`import_catk_obs.py`、`retime_agent.py`、`offline_safety_grid.py`、`plot_aggression.py`；共用代码在 `responsibility/aggression_test.py`。重跑与原输出逐项一致（SMART 所有场景共用一个带种子的随机流：同样的场景集合能逐位复现，只跑子集时逐帧值会变）。
+> - 论文设定（DenseTNT、逐帧、T_f = 2 s、HMM）：阴性对照 mode 0.52、强度单调通过；CAT 攻击者 HMM 判决 AUROC 0.72，10% 误报下检出 15%；攻击者 vs 受害者 0.59；timid 测不出；β_c 0.55–0.57。信号在 β_s（目标对 0.93），丢在对邻居取 max 和 HMM。
+> - 原因：β_s 是对称距离，分不清攻击者与受害者；2 s horizon 加历史惯性（碰撞前 0–1 s，攻击者 61% 的备选也进入 ego 3 m 内）；DenseTNT 对冲来的车几乎不反应（ego 预测进度 +0.07 m），所以 β_c 无效。motion set 和有效性过滤不是瓶颈（AUROC 变化 ≤ 0.012）。
+> - 有效的改动：只看目标对（0.80 → 0.94）；双向 rel（攻击者 vs 受害者 5 s 时 0.89）；以 logged q90 为阈值代替 HMM（CAT 场景 59%、logged 7–16%、受害者 10%）。
+> - SMART：检出率（10% 误报）51% → 86%，β_c 0.55 → 0.81，HMM 0.70 → 0.84；攻击者 vs 受害者 0.69。代价：约 5 倍算力、catk 独立环境、阈值需重标定、SDC 的 β_c 系统偏高（0.54 vs 0.06 nats）。
+- 下一步：SMART 补跑 fair-inf、max-gap；在 100–499 号场景上 held-out 复验；把 rel 写进 `compute_responsibility`，在 SMART 下比较 2 s 与 5 s；判决改用校准阈值或零膨胀 HMM；查清 SMART 的 SDC β_c 偏高。
+
 **风险：** DenseTNT 学的是人类驾驶。RL 策略的状态分布偏离数据太多时（例如极低速、贴路边），反事实样本本身不可靠。在论文里讨论这一点；同时统计每个窗口自车处于"数据分布内"的程度，例如自车 logged 历史在 DenseTNT 下的 goal 对数似然。
 
 ---
