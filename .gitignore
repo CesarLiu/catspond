@@ -1,8 +1,8 @@
 # counterfactual-responsibility outputs and caches
 logs/
-responsibility/__pycache__/
-scripts/responsibility/__pycache__/
-tests/**/__pycache__/
+# Python bytecode, anywhere (test and training runs rewrite it)
+__pycache__/
+*.py[cod]
 # data and large outputs (the scenes folder must hold only scenario files: MetaDrive reads every file in it)
 raw_scenes_500/
 raw_scenes_500_swapped/
