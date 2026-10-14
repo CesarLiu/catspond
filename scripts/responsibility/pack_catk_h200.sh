@@ -13,7 +13,9 @@
 #   core         raw_scenes_500/ (CAT's 500 scenes, 317 MB); catk/ckpts/clsft_E9.ckpt (68 MB)
 #   aggression   adv_scenes/cat/ (CAT's adversarial scenes, 317 MB) and
 #                logs/responsibility/validity/scenes/ (the other scene sets, 452 MB)
-#   compare      windows*.csv and config.json of the DenseTNT runs logs/responsibility/{sdc,adv}
+#   compare      windows*.csv and config.json of the DenseTNT runs logs/responsibility/{sdc,adv}, and
+#                evaluate_aggression's DenseTNT results VAL/eval_dtnt_s5.json (and eval_paper.json)
+#                where they exist, for plot_aggression.py after the SMART aggression test
 #   rollouts     rollouts/replay/ (the replayed logged ego against four adversaries, 3 MB)
 #   v121         womd/cat_scenarios_v121.tfrecord (411 MB; extract_womd_scenarios.py)
 #   densetnt     advgen/pretrained/densetnt.bin (120 MB): to rebuild scene sets or DenseTNT runs there
@@ -62,6 +64,9 @@ for part in $PARTS; do
         for f in "$DTNT_RUNS/$a"/windows*.csv "$DTNT_RUNS/$a/config.json"; do
           link "$f" "repo/logs/responsibility/$a/$(basename "$f")"
         done
+      done
+      for j in eval_dtnt_s5.json eval_paper.json; do
+        [ -e "$VAL/$j" ] && link "$VAL/$j" "repo/logs/responsibility/validity/$j"
       done ;;
     rollouts) link "$ROLLOUTS" repo/rollouts/replay ;;
     v121) link "$TFRECORD" womd/cat_scenarios_v121.tfrecord ;;

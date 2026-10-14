@@ -19,7 +19,7 @@ catk 仓库自己的实验（在 WOMD 上训练奖励网络、用责任奖励微
 |---|---|---|---|
 | `core` | `raw_scenes_500/`（CAT 的 500 个场景）；`catk/ckpts/clsft_E9.ckpt`（SMART 检查点） | 317 MB + 69 MB | 全部 |
 | `aggression` | `adv_scenes/cat/`（CAT 的对抗场景，含 `index.json`）；`logs/responsibility/validity/scenes/`（其余条件场景） | 317 + 452 MB | E5、E6 |
-| `compare` | DenseTNT 的两次运行 `logs/responsibility/{sdc,adv}` 里的 `windows*.csv` 和 `config.json` | 4 MB | E1 的对照 |
+| `compare` | DenseTNT 的两次运行 `logs/responsibility/{sdc,adv}` 里的 `windows*.csv` 和 `config.json`；DenseTNT 的激进性检验结果 `validity/eval_dtnt_s5.json`（有 `eval_paper.json` 时也带上） | 4 MB | E1 的对照，E5 的图 |
 | `rollouts` | `rollouts/replay/`（回放的自车，对 4 种对手） | 3 MB | E3 |
 | `v121` | `womd/cat_scenarios_v121.tfrecord`（CAT 的 497 个 WOMD v1.2.1 原始场景） | 411 MB | E2 |
 | `densetnt` | `advgen/pretrained/densetnt.bin` | 120 MB | 只有在服务器上重建条件场景或重跑 DenseTNT 时才要 |
@@ -27,19 +27,15 @@ catk 仓库自己的实验（在 WOMD 上训练奖励网络、用责任奖励微
 
 不需要：MetaDrive、GPUDrive、WOMD 的原始分片（`v121` 已经把 CAT 的场景单独抽出来了）。
 
-**在本机打包。** 数据分散在两个工作目录里，所以要指定位置；默认的几个部分约 1.5 GB：
+**在本机打包：一条命令。** 数据分散在两个工作目录里，所以命令里要指明几个位置。默认几部分约 1.6 GB，本机打包实测 6 秒：
 
 ```bash
-cd /home/Cesar/catspond-cr
-C=/home/Cesar/catspond
-DRY=1 CAT_SCENES=$C/adv_scenes/cat DTNT_RUNS=$C/logs/responsibility ROLLOUTS=$C/rollouts/replay \
-  CATK_LOGS=$C/logs/catk DENSETNT=$C/advgen/pretrained/densetnt.bin \
-  bash scripts/responsibility/pack_catk_h200.sh                 # 先列出各部分和大小
-OUT=/tmp/catk_h200.tar CAT_SCENES=$C/adv_scenes/cat DTNT_RUNS=$C/logs/responsibility ROLLOUTS=$C/rollouts/replay \
-  bash scripts/responsibility/pack_catk_h200.sh                 # 默认：core aggression compare rollouts v121
-# 加上已有结果：PARTS="core aggression compare rollouts v121 results" CATK_LOGS=$C/logs/catk ...
-rsync -avP /tmp/catk_h200.tar <h200>:~/
+cd /home/Cesar/catspond-cr && C=/home/Cesar/catspond && OUT=/tmp/catk_h200.tar CAT_SCENES=$C/adv_scenes/cat DTNT_RUNS=$C/logs/responsibility ROLLOUTS=$C/rollouts/replay bash scripts/responsibility/pack_catk_h200.sh
 ```
+
+- 前面加 `DRY=1`：只列出各部分和大小，不打包。
+- 加上已有的 SMART 结果：再加 `PARTS="core aggression compare rollouts v121 results" CATK_LOGS=$C/logs/catk`。
+- 传到服务器：`rsync -avP /tmp/catk_h200.tar <h200>:~/`。
 
 **在服务器上解压。** tar 里有三个顶层目录：
 
@@ -173,7 +169,7 @@ python -m scripts.responsibility.plot_aggression --out-dir logs/responsibility/v
 - 耗时：L4 上双进程，每个集合 100 个场景约 40–60 分钟。
 - 已有结果（CAT、mode 两个条件）：CAT 攻击者在 10% 误报下的检出率 86%，β_c AUROC 0.81，攻击者 vs 受害者 0.69。near 1 m 已跑完，但还没进评估。
 - 还缺：fair-inf 和 max-gap。补上后才能回答两个问题：激进程度是否单调，timid 能否测出。
-- DenseTNT 的对照 JSON 用本仓库的环境生成（只读已有的 DenseTNT 运行，不需要 GPU）：`python -m scripts.responsibility.evaluate_aggression --config paper --subsample 5 --frame-s 0.5 --cat-scenes adv_scenes/cat --json logs/responsibility/validity/eval_dtnt_s5.json`。它需要 `validity/runs/paper`。这些运行不在打包里，在本机生成 JSON 再拷过去更省事。
+- DenseTNT 的对照 JSON `eval_dtnt_s5.json` 已经在 `compare` 部分里。它是在本机用下面的命令生成的（约 4 分钟，只用 CPU；需要 `validity/runs/paper`，这些运行不在打包里）：`python -m scripts.responsibility.evaluate_aggression --config paper --subsample 5 --frame-s 0.5 --cat-scenes adv_scenes/cat --json logs/responsibility/validity/eval_dtnt_s5.json`。
 
 ### E6　SMART 的机制探针（惰性、对攻击者的反应）
 
